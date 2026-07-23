@@ -1,11 +1,14 @@
 # wrustic
 
-A minimal read-only terminal UI for [restic](https://restic.net/)-format backup
-repositories, built on [`rustic_core`](https://crates.io/crates/rustic_core)
-and [`ratatui`](https://crates.io/crates/ratatui).
+A terminal UI for browsing and managing [restic](https://restic.net/)-format
+backup repositories, built on the restic 0.19 CLI and
+[`ratatui`](https://crates.io/crates/ratatui).
 
-`wrustic` is read-only by design — write operations are out of scope, not a
-backlog item.
+`wrustic` is a read/write repository manager. Repository creation, backup,
+restore, retention, and maintenance operations are in scope and are delegated
+to restic subprocesses. The current UI exposes repository reads and snapshot
+deletion; additional write workflows are tracked in
+[`docs/roadmap.md`](docs/roadmap.md).
 
 ## Features
 
@@ -112,19 +115,56 @@ Then in the TUI:
 
 ## Relationship to the `restic` binary
 
-`wrustic` does **not** call out to the `restic` executable for anything it
-supports — `rustic_core` reads the on-disk repository format natively. You do
-not need `restic` installed to run `wrustic`.
+`wrustic` requires **restic >= 0.19.1** on `PATH`. Repository reads and the
+exposed `forget` operation run as short-lived restic subprocesses. Structured
+operations use restic's JSON/JSONL output; downloads stream `restic dump`
+stdout directly to the localhost HTTP response.
 
-You *will* want `restic` (>= 0.18.1) on your `$PATH` for development. Use it
-for:
-
-- **All write operations** (init, backup, forget, prune, copy, key management, …).
-- Any read operation not yet wired up in the TUI.
+The repository password is never placed in an environment variable or command
+argument. Wrustic launches restic with `--password-file /dev/stdin`, writes the
+password through the child's anonymous stdin pipe, and closes the pipe before
+reading output.
 
 All dev/test artifacts in the snippets below go under the project's `./tmp/`
 directory (already in `.gitignore`) rather than the system `/tmp` — this keeps
 the workspace self-contained and sidesteps permission issues.
+
+### Garage S3 end-to-end test
+
+The Garage server and the wrustic integration test have separate runners.
+Start a fresh server in its own terminal:
+
+```sh
+./scripts/garage-test-server.sh --reset
+```
+
+The server script downloads the pinned Garage binary into `./tmp/tools/` when
+needed and directly runs `server --single-node --default-bucket` in the
+foreground. Only its S3 API is configured; the web and admin APIs are omitted.
+It does not run restic, Cargo, or tests, and Ctrl-C stops it. Omit `--reset` to
+reuse the existing Garage data.
+
+With a fresh server running, seed the repository and run the integration test
+independently:
+
+```sh
+./scripts/garage-e2e.sh run
+```
+
+`seed` and `test` are also available separately. Test state stays under
+`./tmp/garage-e2e/`. The E2E runner requires restic >= 0.19.1 from
+`./tmp/tools/restic` or `PATH`; use `RESTIC_BIN=/path/to/restic` to select
+another binary. The repository password is piped to
+`--password-file /dev/stdin` and is never exported.
+
+The S3 and internal RPC ports default to 3900 and 3901. Select different ports
+with `GARAGE_S3_PORT` and `GARAGE_RPC_PORT`; only the S3 value is needed by the
+E2E client:
+
+```sh
+GARAGE_S3_PORT=3910 GARAGE_RPC_PORT=3911 ./scripts/garage-test-server.sh --reset
+GARAGE_S3_PORT=3910 ./scripts/garage-e2e.sh run
+```
 
 Typical dev loop to get something to point `wrustic` at:
 
@@ -139,16 +179,11 @@ restic backup --tag demo ./tmp/test-file
 cargo run   # pick "Local filesystem", enter ./tmp/test-repo, then password
 ```
 
-As `wrustic` grows native support for more read operations, the set of things
-that still require the `restic` binary will shrink.
-
 ### REST-server dev workflow
 
-`wrustic` speaks the [restic REST
-protocol](https://github.com/restic/rest-server) directly (via `reqwest`); it
-does **not** invoke the `rest-server` binary at runtime. `rest-server` is
-purely a dev/test peer — the easiest way to exercise the REST code path
-locally.
+`wrustic` reaches a [restic REST
+server](https://github.com/restic/rest-server) through the restic CLI.
+`rest-server` is the easiest local peer for exercising that backend.
 
 Fetch and run [rest-server v0.14.0](https://github.com/restic/rest-server/releases/tag/v0.14.0)
 (substitute the asset for your platform):
@@ -185,7 +220,7 @@ machine, use `--htpasswd-file` and TLS per the `rest-server` documentation;
 
 ### S3 dev workflow (via `rclone serve s3`)
 
-`wrustic` talks S3 through opendal — there's no built-in dev S3 server. The
+`wrustic` talks S3 through restic — there's no built-in dev S3 server. The
 simplest stand-in is [`rclone serve s3`](https://rclone.org/commands/rclone_serve_s3/)
 pointed at a local directory, which lets you exercise the full S3 code path
 without an AWS account.

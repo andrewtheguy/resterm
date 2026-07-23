@@ -1,7 +1,7 @@
 // A one-file, signed-URL localhost downloader for the File Details screen.
 // Each ShareHandle owns a Tokio runtime on its own OS thread, HTTP/1 listeners
-// on 127.0.0.1:<port> and [::1]:<port>, and a Repository opened with the full
-// blob index/cache.
+// on 127.0.0.1:<port> and [::1]:<port>. File bytes are streamed from a
+// short-lived `restic dump` subprocess for each download.
 //
 // The server is bound to exactly one (snap_id, tree_id, name). A URL minted for
 // file A cannot be replayed against a later server started for file B.
@@ -23,14 +23,13 @@ use hyper::header::{CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_TYPE, HeaderValu
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use rustic_core::{IndexedFullStatus, Repository, TreeId};
 use sha2::Sha256;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::config::Profile;
 use crate::local_server;
-use crate::repo::{open_indexed_full, stream_file_content};
+use crate::restic;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -41,7 +40,7 @@ pub(crate) const SHARE_TTL: Duration = Duration::from_secs(3600);
 #[derive(Clone)]
 pub(crate) struct ShareTarget {
     pub(crate) snap_id: String,
-    pub(crate) tree_id: TreeId,
+    pub(crate) tree_id: String,
     pub(crate) name: String,
     pub(crate) display_path: String,
 }
@@ -137,7 +136,7 @@ fn compute_sig(key: &[u8; 32], snap: &str, tree_hex: &str, name: &str, exp: u64)
 pub(crate) fn build_signed_url(
     port: u16,
     snap_id: &str,
-    tree_id: TreeId,
+    tree_id: &str,
     name: &str,
     ttl: Duration,
     key: &[u8; 32],
@@ -146,11 +145,10 @@ pub(crate) fn build_signed_url(
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let tree_hex = tree_id.to_hex().as_str().to_string();
-    let sig = compute_sig(key, snap_id, &tree_hex, name, exp);
+    let sig = compute_sig(key, snap_id, tree_id, name, exp);
     let qs: String = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("snap", snap_id)
-        .append_pair("tree", &tree_hex)
+        .append_pair("tree", tree_id)
         .append_pair("exp", &exp.to_string())
         .append_pair("sig", &sig)
         .finish();
@@ -162,11 +160,10 @@ pub(crate) fn build_signed_url(
 }
 
 struct Ctx {
-    repo: Arc<Repository<IndexedFullStatus>>,
+    profile: Profile,
     key: [u8; 32],
     snap_id: String,
     tree_hex: String,
-    tree_id: TreeId,
     name: String,
     display_path: String,
     short_id: String,
@@ -192,7 +189,7 @@ pub(crate) fn start(
     if snap_id.len() != 64 || !snap_id.bytes().all(|b| b.is_ascii_hexdigit()) {
         bail!("expected a full 64-char hex snapshot id, got `{snap_id}`");
     }
-    let tree_hex = tree_id.to_hex().as_str().to_string();
+    let tree_hex = tree_id;
     if tree_hex.len() != 64 || !tree_hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         bail!("invalid TreeId hex: `{tree_hex}`");
     }
@@ -201,18 +198,16 @@ pub(crate) fn start(
     // spin up a runtime. Hand the listeners to tokio after.
     let listeners_std = local_server::bind_localhost(port)?;
 
-    let repo = open_indexed_full(&profile)?;
-
-    let (url, path, exp) = build_signed_url(port, &snap_id, tree_id, &name, ttl, &key);
+    let (url, path, exp) =
+        build_signed_url(port, &snap_id, &tree_hex, &name, ttl, &key);
     let short_id = random_short_id();
     let short_url = format!("http://localhost:{port}/s/{short_id}");
 
     let ctx = Arc::new(Ctx {
-        repo: Arc::new(repo),
+        profile,
         key,
         snap_id,
         tree_hex,
-        tree_id,
         name,
         display_path,
         short_id,
@@ -381,14 +376,15 @@ async fn handle(
         return Ok(err_resp(StatusCode::FORBIDDEN, "invalid signature"));
     }
 
-    // rustic_core's read path is synchronous; hand it to spawn_blocking and
-    // stream bytes back through an mpsc into a custom Body impl below.
+    // `restic dump` is blocking; hand it to the blocking pool and stream its
+    // stdout through the bounded channel so HTTP backpressure reaches the
+    // child process.
     let (tx, rx) = mpsc::channel::<io::Result<Bytes>>(8);
-    let repo = ctx.repo.clone();
-    let tree_id = ctx.tree_id;
-    let bound_name = ctx.name.clone();
+    let profile = ctx.profile.clone();
+    let snapshot_id = ctx.snap_id.clone();
+    let display_path = ctx.display_path.clone();
     tokio::task::spawn_blocking(move || {
-        if let Err(e) = stream_file_content(&repo, tree_id, &bound_name, &tx) {
+        if let Err(e) = restic::stream_dump(&profile, &snapshot_id, &display_path, &tx) {
             let _ = tx.blocking_send(Err(io::Error::other(format!("{e:#}"))));
         }
     });
@@ -629,56 +625,68 @@ mod tests {
         assert_eq!(mime_for("weird.qqqq"), "application/octet-stream");
     }
 
-    // End-to-end smoke test against a real local restic repo prepared under
-    // tmp/share-test (see the CLI commands in the implementation log).
-    // Marked #[ignore] so `cargo test` doesn't depend on the fixture; run
-    // explicitly with `cargo test share::tests::e2e -- --ignored`.
+    // End-to-end smoke test against a disposable repository under ./tmp.
     #[test]
     #[ignore]
     fn e2e_serves_and_validates_signed_url() {
         use std::io::{Read, Write};
         use std::net::TcpStream;
+        use std::path::PathBuf;
 
-        // Find the latest snapshot id (64-hex) and the file's parent tree id
-        // by walking the repo via rustic_core, so this test isn't tied to a
-        // specific snapshot id that's only known after `restic backup`.
+        let root = PathBuf::from("tmp").join(format!("share-it-{}", std::process::id()));
+        // Remove the fixture directory on both normal completion and panic.
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                std::fs::remove_dir_all(&self.0).ok();
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let repository = root.join("repository");
+        let source = root.join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::write(source.join("greeting.txt"), b"hello signed-url world\n").unwrap();
+        std::fs::write(source.join("blob.bin"), b"other file\n").unwrap();
         let profile = Profile::Local {
             password: "sandbox".into(),
-            local_path: "tmp/share-test/restic-repo".into(),
+            local_path: repository.to_string_lossy().into_owned(),
         };
+        restic::run(&profile, &["init"]).expect("init");
+        restic::run(&profile, &["backup", source.to_str().unwrap()]).expect("backup");
+
         let repo = crate::repo::open_indexed(&profile).expect("open repo");
-        let snaps = repo.get_all_snapshots().expect("list snapshots");
-        let snap = snaps.last().expect("at least one snapshot");
-        let snap_id = snap.id.to_hex().as_str().to_string();
+        let snaps = crate::repo::load_snapshots(&profile).expect("list snapshots");
+        let snap = snaps.first().expect("at least one snapshot");
+        let snap_id = snap.id.clone();
 
-        // Walk to the tree containing `greeting.txt`. The backup put files
-        // under `source/`, so the path is `/source/greeting.txt`. Resolve
-        // the parent tree id by descending into `source`.
-        let root_tree = snap.tree;
-        let root_rows = repo.get_tree(&root_tree).expect("root tree");
-        let source_node = root_rows
-            .nodes
-            .iter()
-            .find(|n| n.name().to_string_lossy() == "source")
-            .expect("source dir node");
-        let source_tree = source_node.subtree.expect("source has subtree");
-
-        // tiny helper inlined for the test
-        fn tree_hex_str(t: TreeId) -> String {
-            t.to_hex().as_str().to_string()
+        let root_tree =
+            crate::repo::snapshot_root_tree(&repo, &snap_id).expect("root tree id");
+        fn find_file(
+            repo: &crate::repo::RepoSession,
+            tree: &str,
+            prefix: &str,
+        ) -> Option<(String, String)> {
+            for row in crate::repo::list_tree(repo, tree).ok()? {
+                let path = format!("{prefix}/{}", row.name);
+                if row.name == "greeting.txt" {
+                    return Some((tree.to_string(), path));
+                }
+                if let Some(subtree) = row.subtree
+                    && let Some(found) = find_file(repo, &subtree, &path)
+                {
+                    return Some(found);
+                }
+            }
+            None
         }
-
-        // Free up our `repo` handle — share::start opens its own with the
-        // full index. (Otherwise both repos would scribble on the same cache
-        // dir; rustic_core is fine with concurrent opens, but we don't need
-        // two here.)
-        drop(repo);
+        let (source_tree, display_path) =
+            find_file(&repo, &root_tree, "").expect("find greeting.txt");
 
         let target = ShareTarget {
             snap_id: snap_id.clone(),
-            tree_id: source_tree,
+            tree_id: source_tree.clone(),
             name: "greeting.txt".into(),
-            display_path: "/source/greeting.txt".into(),
+            display_path,
         };
 
         // Bind to an ephemeral port instead of 7834 so this test can run
@@ -734,10 +742,10 @@ mod tests {
             .unwrap()
             .parse()
             .unwrap();
-        let other_sig = compute_sig(&key, &snap_id, &tree_hex_str(source_tree), "blob.bin", exp_for_other);
+        let other_sig = compute_sig(&key, &snap_id, &source_tree, "blob.bin", exp_for_other);
         let other_qs: String = url::form_urlencoded::Serializer::new(String::new())
             .append_pair("snap", &snap_id)
-            .append_pair("tree", &tree_hex_str(source_tree))
+            .append_pair("tree", &source_tree)
             .append_pair("exp", &exp_for_other.to_string())
             .append_pair("sig", &other_sig)
             .finish();
@@ -761,10 +769,10 @@ mod tests {
             .as_secs()
             .saturating_sub(60);
         let past_sig =
-            compute_sig(&key, &snap_id, &tree_hex_str(source_tree), "greeting.txt", past_exp);
+            compute_sig(&key, &snap_id, &source_tree, "greeting.txt", past_exp);
         let past_qs: String = url::form_urlencoded::Serializer::new(String::new())
             .append_pair("snap", &snap_id)
-            .append_pair("tree", &tree_hex_str(source_tree))
+            .append_pair("tree", &source_tree)
             .append_pair("exp", &past_exp.to_string())
             .append_pair("sig", &past_sig)
             .finish();

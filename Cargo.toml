@@ -1,6 +1,6 @@
 [package]
 name = "wrustic"
-version = "0.0.31"
+version = "0.0.32"
 edition = "2024"
 
 [dependencies]
@@ -16,8 +16,6 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 jiff = "0.2"
 rand = "0.10.1"
 ratatui = "0.30.0"
-rustic_backend = { version = "0.6.2", default-features = false, features = ["rest", "opendal"] }
-rustic_core = { version = "0.12.0", default-features = false }
 scrypt = { version = "0.12", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -8,15 +9,14 @@ use ratatui::{
     layout::Rect,
     widgets::{ListState, TableState},
 };
-use rustic_core::{IndexedIdsStatus, Repository, TreeId};
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::config::{self, BackendKind, Config, PassphraseMeta, Paths, Profile};
 use crate::crypto::Cipher;
 use crate::passphrase::{self, PassphrasePhase};
-use crate::repo::{ContentKind, ContentRow, ContentsPreview, DeleteSnapshotInfo, DiffChange, DiffSummary, FileDetails, SnapshotRow};
-use crate::restic::{self, ResticError, ResticInfo, SnapshotDetails};
+use crate::repo::{ContentKind, ContentRow, ContentsPreview, DeleteSnapshotInfo, DiffChange, DiffSummary, FileDetails, RepoSession, SnapshotRow};
+use crate::restic::SnapshotDetails;
 use crate::share::{self, SHARE_TTL, ShareHandle, ShareTarget};
 
 pub(crate) const BACKEND_ORDER: [BackendKind; 3] =
@@ -211,7 +211,7 @@ fn page_select(state: &mut impl Scrollable, len: usize, forward: bool, page_size
 
 pub(crate) struct BrowseFrame {
     pub(crate) name: String,
-    pub(crate) tree_id: TreeId,
+    pub(crate) tree_id: String,
     pub(crate) items: Vec<ContentRow>,
     pub(crate) table_state: TableState,
 }
@@ -271,12 +271,12 @@ pub(crate) struct App {
     pub(crate) filter_values: Vec<String>,
     pub(crate) filter_pending_kind: Option<FilterKind>,
     pub(crate) active_profile_name: Option<String>,
-    pub(crate) repo_session: Option<Repository<IndexedIdsStatus>>,
+    pub(crate) repo_session: Option<RepoSession>,
     pub(crate) browse_snapshot_id: String,
     pub(crate) browse_stack: Vec<BrowseFrame>,
-    pub(crate) pending_descend: Option<(TreeId, String)>,
+    pub(crate) pending_descend: Option<(String, String)>,
     pub(crate) pending_refresh_path: Option<Vec<String>>,
-    pub(crate) pending_file_lookup: Option<(TreeId, String, String)>,
+    pub(crate) pending_file_lookup: Option<(String, String, String)>,
     pub(crate) file_details: Option<FileDetails>,
     pub(crate) file_details_scroll: u16,
     // What `Screen::ShareUrl` would serve if started. Captured at the moment
@@ -296,7 +296,6 @@ pub(crate) struct App {
     pub(crate) error_is_fatal: bool,
     pub(crate) quit: bool,
 
-    pub(crate) restic_check: Option<Result<ResticInfo, ResticError>>,
     pub(crate) delete_target: Option<String>,
     pub(crate) delete_info: Option<DeleteSnapshotInfo>,
     pub(crate) delete_show_json: bool,
@@ -306,6 +305,10 @@ pub(crate) struct App {
     pub(crate) delete_details_parsed: Option<SnapshotDetails>,
     pub(crate) delete_details_raw: Option<String>,
     pub(crate) delete_root_listing: Option<ContentsPreview>,
+    // Snapshot previews keyed by (snapshot id, limit). Snapshots are
+    // immutable and ids are content-derived, so entries can never go stale —
+    // they're only dropped to reclaim memory once a snapshot is forgotten.
+    pub(crate) preview_cache: HashMap<(String, usize), ContentsPreview>,
 
     pub(crate) compare_first_id: Option<String>,
     pub(crate) compare_first_row_idx: Option<usize>,
@@ -403,7 +406,6 @@ impl App {
             share_error: None,
             error_is_fatal: false,
             quit: false,
-            restic_check: None,
             delete_target: None,
             delete_info: None,
             delete_show_json: false,
@@ -413,6 +415,7 @@ impl App {
             delete_details_parsed: None,
             delete_details_raw: None,
             delete_root_listing: None,
+            preview_cache: HashMap::new(),
             compare_first_id: None,
             compare_first_row_idx: None,
             compare_second_id: None,
@@ -952,13 +955,6 @@ impl App {
     }
 
     fn begin_delete_flow(&mut self, snapshot_id: String) {
-        if self.restic_check.is_none() {
-            self.restic_check = Some(restic::detect());
-        }
-        if let Some(Err(e)) = &self.restic_check {
-            self.screen = Screen::SnapshotDeleteError(e.user_message());
-            return;
-        }
         self.delete_target = Some(snapshot_id);
         self.delete_show_json = false;
         self.screen = Screen::SnapshotDeleteLoading;
@@ -1069,7 +1065,7 @@ impl App {
         match row.kind {
             ContentKind::Parent => self.go_up(),
             ContentKind::Dir => {
-                if let Some(subtree) = row.subtree {
+                if let Some(subtree) = row.subtree.clone() {
                     // Descending — drop any pending double-click pair so the
                     // new frame can't inherit a stale match.
                     self.last_content_click = None;
@@ -1114,11 +1110,12 @@ impl App {
         };
         self.share_target = Some(ShareTarget {
             snap_id: self.browse_snapshot_id.clone(),
-            tree_id: f.tree_id,
+            tree_id: f.tree_id.clone(),
             name: row.name.clone(),
             display_path: full_path.clone(),
         });
-        self.pending_file_lookup = Some((f.tree_id, row.name.clone(), full_path));
+        self.pending_file_lookup =
+            Some((f.tree_id.clone(), row.name.clone(), full_path));
         self.file_details_scroll = 0;
         self.screen = Screen::LoadingFileDetails;
     }
