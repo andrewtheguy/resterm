@@ -3,4 +3,4 @@
 - pass the repository password through an anonymous stdin pipe with `--password-file /dev/stdin`, never through an environment variable or argv
 - use this project root's tmp/ folder for dev/test data and workspace to avoid permission issues
 - run cargo clippy and cargo test with --all-features after rust code changes, don't run cargo fmt because it affects diff
-- for local testing, use alternative config dir such as cargo run -- --config-dir ./tmp/wrustic-sandbox so that it won't interfere production config in ~/.config/wrustic
+- for local testing, use alternative config dir such as cargo run -- --config-dir ./tmp/resterm-sandbox so that it won't interfere production config in ~/.config/resterm

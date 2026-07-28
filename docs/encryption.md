@@ -3,7 +3,7 @@
 Per-value secret encryption for `config.toml`, plus passphrase input
 server that derives the key.
 
-**Scope: single-user, single-device.** wrustic is a personal tool — one
+**Scope: single-user, single-device.** resterm is a personal tool — one
 person, one machine. There is no multi-user threat model, no privilege
 separation inside the binary, no defense-in-depth against another local
 account on the same machine. Everything below — file permissions,
@@ -82,7 +82,7 @@ salt          = "<base64 32-byte salt>"
 
 - `instance` is the DNS-safe label chosen by the user at Setup (max 32
   chars, `[a-z0-9]([a-z0-9-]*[a-z0-9])?`). Used to construct the browser
-  URL (`http://<instance>.wrustic.localhost:<port>/auth/<key>`).
+  URL (`http://<instance>.resterm.localhost:<port>/auth/<key>`).
 - `instance_sig` is `HMAC-SHA256(instance, derived_key)`, base64-encoded.
   Verified on Unlock to give a fast "wrong passphrase" error before
   attempting full config decryption.
@@ -131,7 +131,7 @@ keys) sits behind `$WR;1.0;AES-256-GCM;` and is unreadable without the passphras
 
 The key is never on disk; the `[passphrase]` block is metadata, not
 material. An attacker with only `config.toml` would need to brute-force
-the passphrase through wrustic's scrypt parameters and then pass the
+the passphrase through resterm's scrypt parameters and then pass the
 HMAC check.
 
 ### What's still in scope for a config-only leak
@@ -210,12 +210,12 @@ Passphrases are entered in masked TUI fields.
 **Setup** (`Screen::PassphraseSetup`): after the instance-name prompt, the
 user enters and confirms a passphrase. It must be at least 12 characters and
 include an uppercase letter, lowercase letter, digit, and special character.
-scrypt runs synchronously on `Screen::PassphraseDerivingKey`, then wrustic
+scrypt runs synchronously on `Screen::PassphraseDerivingKey`, then resterm
 computes the instance HMAC and saves the `[passphrase]` metadata. When
 keychain support is enabled, a checkbox controls whether the passphrase is
 stored there.
 
-**Unlock**: without keychain support, wrustic goes directly to the masked
+**Unlock**: without keychain support, resterm goes directly to the masked
 manual input. With keychain support, `Screen::AuthMethodChoice` offers
 `Use passphrase from keychain` and `Enter passphrase manually`. Manual
 entry starts with keychain saving disabled but lets the user opt in. After
@@ -231,10 +231,10 @@ lives in application memory for the session.
 The share server (`src/share.rs`) signs URLs with HMAC-SHA256 over
 `(snap_id, tree_id, name, exp)`. The 32-byte signing key is derived via
 `passphrase::derive_share_signing_key(config_key)` — SHA-256 over
-`"wrustic-share-v1\0" || config_key`.
+`"resterm-share-v1\0" || config_key`.
 
 Same key per identity (no per-session randomness) → share URLs stay valid
-across wrustic restarts within their 1-hour TTL. Different passphrase →
+across resterm restarts within their 1-hour TTL. Different passphrase →
 different key, so URLs minted under one passphrase cannot be replayed
 against a server started under another.
 
@@ -243,7 +243,7 @@ verification before the server ever touches a `Cipher::decrypt`.
 
 ## Threat model and non-goals
 
-wrustic assumes a single-user, single-device deployment. The encryption
+resterm assumes a single-user, single-device deployment. The encryption
 is sized for "the config file leaves the device" scenarios, not for
 "there are hostile users on the same device" scenarios.
 
@@ -257,7 +257,7 @@ In scope:
   intact even if the process is killed mid-write.
 
 Not in scope:
-- **Hostile local accounts on the same machine.** wrustic doesn't
+- **Hostile local accounts on the same machine.** resterm doesn't
   defend against this — single-user scope.
 - **Root / disk-image access.** Anyone with raw disk access or the
   passphrase can decrypt the config. Use full-disk
@@ -265,7 +265,7 @@ Not in scope:
 - **Memory disclosure** (core dumps, ptrace, swap). Cipher key bytes are
   ordinary heap memory — not `mlock`ed, not zeroized on drop.
 - **Repo-level secrecy.** This is about `config.toml`, not about the
-  restic repository itself. Restic has its own password (which wrustic
+  restic repository itself. Restic has its own password (which resterm
   stores encrypted in the per-profile `password` field) and its own
   at-rest encryption.
 

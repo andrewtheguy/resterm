@@ -1,10 +1,10 @@
-# wrustic
+# resterm
 
 A terminal UI for browsing and managing [restic](https://restic.net/)-format
 backup repositories, built on the restic 0.19 CLI and
 [`ratatui`](https://crates.io/crates/ratatui).
 
-`wrustic` is a read/write repository manager. Repository creation, backup,
+`resterm` is a read/write repository manager. Repository creation, backup,
 restore, retention, and maintenance operations are in scope and are delegated
 to restic subprocesses. The current UI exposes repository reads and snapshot
 deletion; additional write workflows are tracked in
@@ -32,11 +32,11 @@ See [`docs/roadmap.md`](docs/roadmap.md) for planned features.
 ## Install (prebuilt binary)
 
 A convenience script downloads the latest release binary from GitHub and
-drops it at `$HOME/.local/bin/wrustic` — no `sudo`, no system-wide install.
+drops it at `$HOME/.local/bin/resterm` — no `sudo`, no system-wide install.
 Supported targets: `linux-amd64`, `linux-arm64`, `macos-arm64`.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/andrewtheguy/wrustic/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/andrewtheguy/resterm/main/install.sh | bash
 ```
 
 Or clone the repo and run `./install.sh` directly. Useful flags:
@@ -65,15 +65,15 @@ cargo run
 ### CLI flags
 
 ```text
-wrustic [-c|--config-dir <PATH>] [-p|--port <N>] [--no-keychain] [-h|--help]
+resterm [-c|--config-dir <PATH>] [-p|--port <N>] [--no-keychain] [-h|--help]
 ```
 
 `--config-dir <PATH>` overrides the default config location
-(`~/.config/wrustic`). Useful for keeping separate profile sets, running
+(`~/.config/resterm`). Useful for keeping separate profile sets, running
 tests, or driving an automation/CI flow against a throwaway directory:
 
 ```sh
-cargo run -- --config-dir ./tmp/wrustic-sandbox
+cargo run -- --config-dir ./tmp/resterm-sandbox
 ```
 
 The directory is created on first run if it doesn't exist.
@@ -88,7 +88,7 @@ why it is not enabled on Linux by default, and how to build with it.
 
 ### First run
 
-On first run (no existing `config.toml`), wrustic prompts for an
+On first run (no existing `config.toml`), resterm prompts for an
 **instance name** — a short DNS-safe label (e.g. `laptop`, `workstation`).
 Then you set a passphrase (min 12 chars, must include uppercase, lowercase,
 digit, and special character). The passphrase derives a 32-byte encryption
@@ -115,13 +115,13 @@ Then in the TUI:
 
 ## Relationship to the `restic` binary
 
-`wrustic` requires **restic >= 0.19.1** on `PATH`. Repository reads and the
+`resterm` requires **restic >= 0.19.1** on `PATH`. Repository reads and the
 exposed `forget` operation run as short-lived restic subprocesses. Structured
 operations use restic's JSON/JSONL output; downloads stream `restic dump`
 stdout directly to the localhost HTTP response.
 
 The repository password is never placed in an environment variable or command
-argument. Wrustic launches restic with `--password-file /dev/stdin`, writes the
+argument. Resterm launches restic with `--password-file /dev/stdin`, writes the
 password through the child's anonymous stdin pipe, and closes the pipe before
 reading output.
 
@@ -131,7 +131,7 @@ the workspace self-contained and sidesteps permission issues.
 
 ### Garage S3 end-to-end test
 
-The Garage server and the wrustic integration test have separate runners.
+The Garage server and the resterm integration test have separate runners.
 Start a fresh server in its own terminal:
 
 ```sh
@@ -166,7 +166,7 @@ GARAGE_S3_PORT=3910 GARAGE_RPC_PORT=3911 ./scripts/garage-test-server.sh --reset
 GARAGE_S3_PORT=3910 ./scripts/garage-e2e.sh run
 ```
 
-Typical dev loop to get something to point `wrustic` at:
+Typical dev loop to get something to point `resterm` at:
 
 ```sh
 export RESTIC_PASSWORD=test
@@ -181,7 +181,7 @@ cargo run   # pick "Local filesystem", enter ./tmp/test-repo, then password
 
 ### REST-server dev workflow
 
-`wrustic` reaches a [restic REST
+`resterm` reaches a [restic REST
 server](https://github.com/restic/rest-server) through the restic CLI.
 `rest-server` is the easiest local peer for exercising that backend.
 
@@ -201,7 +201,7 @@ mkdir -p ./rest-data
 cd ..
 ```
 
-Then seed a repo through it with `restic`, and point `wrustic` at the same URL:
+Then seed a repo through it with `restic`, and point `resterm` at the same URL:
 
 ```sh
 export RESTIC_REPOSITORY=rest:http://localhost:8000/
@@ -216,11 +216,11 @@ cargo run   # pick "REST server", enter http://localhost:8000/, then password
 
 Note: `--no-auth` is a local-only convenience. For anything outside a dev
 machine, use `--htpasswd-file` and TLS per the `rest-server` documentation;
-`wrustic` accepts credentials embedded in the URL (`https://user:pass@host/`).
+`resterm` accepts credentials embedded in the URL (`https://user:pass@host/`).
 
 ### S3 dev workflow (via `rclone serve s3`)
 
-`wrustic` talks S3 through restic — there's no built-in dev S3 server. The
+`resterm` talks S3 through restic — there's no built-in dev S3 server. The
 simplest stand-in is [`rclone serve s3`](https://rclone.org/commands/rclone_serve_s3/)
 pointed at a local directory, which lets you exercise the full S3 code path
 without an AWS account.
@@ -229,11 +229,11 @@ Requires `rclone` (>= v1.73) on `$PATH`. `serve s3` is marked **Experimental**
 upstream but is sufficient for dev.
 
 ```sh
-mkdir -p ./tmp/s3-data/wrustic-bucket    # bucket dir must pre-exist
+mkdir -p ./tmp/s3-data/resterm-bucket    # bucket dir must pre-exist
 
 rclone serve s3 ./tmp/s3-data \
     --addr 127.0.0.1:8333 \
-    --auth-key 'wrustic-key,wrustic-secret' \
+    --auth-key 'resterm-key,resterm-secret' \
     --force-path-style=true \
     >./tmp/rclone-s3.log 2>&1 &
 ```
@@ -242,10 +242,10 @@ Seed a repo through it with `restic` (uses standard AWS env vars; the region
 value is meaningless to rclone but restic's SDK requires *some* region):
 
 ```sh
-export AWS_ACCESS_KEY_ID=wrustic-key
-export AWS_SECRET_ACCESS_KEY=wrustic-secret
+export AWS_ACCESS_KEY_ID=resterm-key
+export AWS_SECRET_ACCESS_KEY=resterm-secret
 export AWS_DEFAULT_REGION=us-east-1
-export RESTIC_REPOSITORY=s3:http://127.0.0.1:8333/wrustic-bucket
+export RESTIC_REPOSITORY=s3:http://127.0.0.1:8333/resterm-bucket
 export RESTIC_PASSWORD=test
 restic init
 echo hello > ./tmp/test-file
@@ -253,15 +253,15 @@ restic backup ./tmp/test-file
 restic backup --tag demo ./tmp/test-file
 ```
 
-Then in `wrustic`, pick **S3** and enter:
+Then in `resterm`, pick **S3** and enter:
 
 | Prompt        | Value                       |
 | ------------- | --------------------------- |
 | endpoint      | `http://127.0.0.1:8333`     |
-| bucket        | `wrustic-bucket`            |
+| bucket        | `resterm-bucket`            |
 | region        | `us-east-1` (or leave blank)|
-| access key ID | `wrustic-key`               |
-| secret access | `wrustic-secret`            |
+| access key ID | `resterm-key`               |
+| secret access | `resterm-secret`            |
 | password      | `test`                      |
 
 Cleanup: `kill` the `rclone` process and `rm -rf ./tmp/s3-data`.
@@ -271,7 +271,7 @@ Caveats:
   to exist on disk before `restic init`.
 - `--force-path-style=true` is required — rclone's S3 server doesn't speak
   virtual-hosted-style addressing.
-- Profiles are persisted in `~/.config/wrustic/config.toml`. Secret fields
+- Profiles are persisted in `~/.config/resterm/config.toml`. Secret fields
   such as the restic password and S3 keys are encrypted per value with
   AES-256-GCM under a passphrase-derived key. The file itself is not a
   whole-file encrypted archive; see `docs/encryption.md` for the on-disk schema

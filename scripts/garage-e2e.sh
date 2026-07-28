@@ -4,7 +4,7 @@ set -euo pipefail
 
 GARAGE_ACCESS_KEY="GK22222222222222222222222222222222"
 GARAGE_SECRET_KEY="3333333333333333333333333333333333333333333333333333333333333333"
-GARAGE_BUCKET="wrustic-it"
+GARAGE_BUCKET="resterm-it"
 RESTIC_REPOSITORY_PASSWORD="garage-repository-password"
 GARAGE_S3_PORT="${GARAGE_S3_PORT:-3900}"
 
@@ -31,7 +31,7 @@ Usage: ./scripts/garage-e2e.sh COMMAND
 
 Commands:
   seed    Initialize a fresh restic repository and create two snapshots
-  test    Run wrustic's ignored live Garage integration test
+  test    Run resterm's ignored live Garage integration test
   run     Seed and test, leaving the independently managed server running
 
 Start a fresh server in another terminal with:
@@ -118,8 +118,8 @@ run_test() {
     mkdir -p "$test_bin_dir"
     ln -sf "$restic_binary" "${test_bin_dir}/restic"
 
-    info "running the live wrustic Garage S3 integration test"
-    WRUSTIC_GARAGE_ENDPOINT="http://127.0.0.1:${GARAGE_S3_PORT}" \
+    info "running the live resterm Garage S3 integration test"
+    RESTERM_GARAGE_ENDPOINT="http://127.0.0.1:${GARAGE_S3_PORT}" \
         PATH="${test_bin_dir}:${PATH}" \
         cargo test --manifest-path "${project_root}/Cargo.toml" --all-features \
         repo::tests::live_garage_s3_profile_reads_seeded_repository \

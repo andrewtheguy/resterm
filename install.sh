@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# wrustic installer for Linux and macOS.
+# resterm installer for Linux and macOS.
 # Installs to $HOME/.local/bin (no sudo required).
-# Downloads latest binary from: https://github.com/andrewtheguy/wrustic/releases
+# Downloads latest binary from: https://github.com/andrewtheguy/resterm/releases
 #
 # Usage: ./install.sh [RELEASE_TAG] [--prerelease] [--download-only]
 # Or set RELEASE_TAG environment variable
@@ -10,7 +10,7 @@
 set -e
 
 REPO_OWNER="andrewtheguy"
-REPO_NAME="wrustic"
+REPO_NAME="resterm"
 DOWNLOAD_ONLY=false
 PREFER_PRERELEASE=false
 
@@ -222,13 +222,13 @@ detect_arch() {
 get_binary_name() {
     case "${OS}-${ARCH}" in
         "linux-amd64")
-            BINARY_NAME="wrustic-linux-amd64"
+            BINARY_NAME="resterm-linux-amd64"
             ;;
         "linux-arm64")
-            BINARY_NAME="wrustic-linux-arm64"
+            BINARY_NAME="resterm-linux-arm64"
             ;;
         "macos-arm64")
-            BINARY_NAME="wrustic-macos-arm64"
+            BINARY_NAME="resterm-macos-arm64"
             ;;
         *)
             print_error "Unsupported platform: ${OS}-${ARCH}"
@@ -276,7 +276,7 @@ download_binary() {
     fi
 }
 
-# Smoke-test the binary (wrustic exits 0 on --help; the TUI is not entered).
+# Smoke-test the binary (resterm exits 0 on --help; the TUI is not entered).
 test_binary() {
     local binary="$1"
     print_info "Testing downloaded binary..."
@@ -355,7 +355,7 @@ download_and_install() {
     temp_dir=$(mktemp -d)
     local temp_binary="${temp_dir}/${BINARY_NAME}"
     local target_dir="$HOME/.local/bin"
-    local final_path="${target_dir}/wrustic"
+    local final_path="${target_dir}/resterm"
 
     trap 'rm -rf "$temp_dir"' EXIT
 
@@ -384,7 +384,7 @@ download_and_install() {
 
         if [ -n "$profile" ]; then
             print_warn "${target_dir} is not in your current PATH, but is configured in your profile."
-            print_warn "To use wrustic now, reload your profile:"
+            print_warn "To use resterm now, reload your profile:"
             echo ""
             echo "    source $profile"
             echo ""
@@ -404,7 +404,7 @@ download_and_install() {
 show_usage() {
     echo "Usage: $0 [OPTIONS] [RELEASE_TAG]"
     echo ""
-    echo "Download and install wrustic binary to \$HOME/.local/bin (no sudo)"
+    echo "Download and install resterm binary to \$HOME/.local/bin (no sudo)"
     echo ""
     echo "Options:"
     echo "  --download-only  Download binary to current directory without installing"
@@ -426,9 +426,9 @@ show_usage() {
 # Main installation function
 install() {
     if [ "$DOWNLOAD_ONLY" = true ]; then
-        print_info "wrustic downloader"
+        print_info "resterm downloader"
     else
-        print_info "wrustic installer"
+        print_info "resterm installer"
     fi
     print_info "Release: ${RELEASE_TAG}"
     print_info "Repository: ${REPO_OWNER}/${REPO_NAME}"
@@ -461,7 +461,7 @@ install() {
     else
         download_and_install
         print_info "Installation completed successfully!"
-        print_info "You can now run 'wrustic' from your terminal."
+        print_info "You can now run 'resterm' from your terminal."
     fi
 }
 
@@ -478,9 +478,9 @@ main() {
     parse_args "$@"
 
     if [ "$DOWNLOAD_ONLY" = true ]; then
-        print_info "Starting wrustic download..."
+        print_info "Starting resterm download..."
     else
-        print_info "Starting wrustic installation..."
+        print_info "Starting resterm installation..."
         check_privileges
     fi
 

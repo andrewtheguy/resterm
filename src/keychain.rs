@@ -1,4 +1,4 @@
-const SERVICE: &str = "wrustic";
+const SERVICE: &str = "resterm";
 
 pub(crate) fn init_store() -> bool {
     #[cfg(target_os = "macos")]

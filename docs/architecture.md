@@ -1,10 +1,10 @@
 # Architecture
 
-A working map of wrustic for anyone reading the code. Reflects current state
+A working map of resterm for anyone reading the code. Reflects current state
 on `main`; if a section disagrees with the source, the source wins — please
 update this file.
 
-## What wrustic is
+## What resterm is
 
 A terminal UI for browsing and managing restic backup repositories. It opens
 a repo, lists snapshots, lets you walk the file tree, inspect file details,
@@ -13,7 +13,7 @@ The product scope includes repository writes such as initialization, backup,
 restore, retention, and maintenance. Snapshot deletion is the first write
 workflow currently exposed by the UI.
 
-**Scope: single-user, single-device.** wrustic is a personal tool — one
+**Scope: single-user, single-device.** resterm is a personal tool — one
 person, one machine (or one account on a shared box that they fully own).
 Multi-user, multi-tenant, and shared-host scenarios are explicitly out of
 scope: no per-user config separation, no privilege boundary inside the
@@ -64,7 +64,7 @@ and passphrase dialog. Every screen is rendered by a corresponding
 `render_<screen>` function in `ui.rs`.
 
 `App` (in `app.rs`) is a flat struct holding *every* piece of session state.
-This is deliberate — wrustic is small enough that a fat struct + an enum
+This is deliberate — resterm is small enough that a fat struct + an enum
 discriminator is more legible than a nested per-screen state machine. The
 struct includes:
 - Always-present: `screen`, `paths`, `config`, `cipher`, `server_port`.
@@ -158,8 +158,8 @@ download and forwards stdout through a bounded channel to Hyper.
 Run from `AGENTS.md`:
 - `cargo clippy --all-features` and `cargo test --all-features` after every
   Rust change. Don't run `cargo fmt` — it churns the diff.
-- For local testing, use `cargo run -- --config-dir ./tmp/wrustic-sandbox`
-  so the production `~/.config/wrustic` is never touched.
+- For local testing, use `cargo run -- --config-dir ./tmp/resterm-sandbox`
+  so the production `~/.config/resterm` is never touched.
 - Test fixtures live under `./tmp/` (gitignored).
 - Live integration fixtures create repositories and sources under `./tmp/`
   and use restic for all repository mutations.

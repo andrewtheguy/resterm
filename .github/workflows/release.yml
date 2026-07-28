@@ -76,13 +76,13 @@ jobs:
         run: cargo build --release ${{ runner.os == 'macOS' && '--features keychain' || '' }}
 
       - name: Rename binary
-        run: mv target/release/wrustic target/release/wrustic-${{ matrix.label }}
+        run: mv target/release/resterm target/release/resterm-${{ matrix.label }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wrustic-${{ matrix.label }}
-          path: target/release/wrustic-${{ matrix.label }}
+          name: resterm-${{ matrix.label }}
+          path: target/release/resterm-${{ matrix.label }}
           if-no-files-found: error
 
   create-release:
@@ -92,7 +92,7 @@ jobs:
       - name: Download release artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: wrustic-*
+          pattern: resterm-*
           path: artifacts
           merge-multiple: true
 

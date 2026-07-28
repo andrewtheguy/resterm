@@ -5,11 +5,11 @@ use anyhow::{Result, bail};
 pub(crate) const DEFAULT_SERVER_PORT: u16 = 7834;
 
 pub(crate) const USAGE: &str = "\
-Usage: wrustic [OPTIONS]
+Usage: resterm [OPTIONS]
 
 Options:
-  -c, --config-dir <PATH>     Use <PATH> as the wrustic config directory instead
-                              of the platform default (~/.config/wrustic on Linux).
+  -c, --config-dir <PATH>     Use <PATH> as the resterm config directory instead
+                              of the platform default (~/.config/resterm on Linux).
                               The directory will be created on first run.
   -p, --port <N>              Localhost port for the file-share dialog.
                               Default: 7834.

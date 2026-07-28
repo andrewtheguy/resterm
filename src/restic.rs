@@ -27,10 +27,10 @@ impl ResticError {
         let min = format!("{MIN_MAJOR}.{MIN_MINOR}.{MIN_PATCH}");
         match self {
             ResticError::NotFound => format!(
-                "restic not found on PATH. Install restic >= {min} to use wrustic."
+                "restic not found on PATH. Install restic >= {min} to use resterm."
             ),
             ResticError::TooOld { found } => format!(
-                "restic {found} found on PATH, but >= {min} is required to use wrustic."
+                "restic {found} found on PATH, but >= {min} is required to use resterm."
             ),
             ResticError::Unparseable { output } => {
                 format!("Could not parse restic version output: {output}")

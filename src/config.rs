@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::crypto::{Cipher, is_passphrase_encrypted};
 
-const CONFIG_DIR_NAME: &str = "wrustic";
+const CONFIG_DIR_NAME: &str = "resterm";
 const CONFIG_FILE: &str = "config.toml";
 const CONFIG_VERSION: u32 = 2;
 
@@ -178,7 +178,7 @@ pub fn load(paths: &Paths, cipher: &Cipher) -> Result<Config> {
 
     if config.version != CONFIG_VERSION {
         bail!(
-            "config at {} has version {} but this build of wrustic expects version {} \
+            "config at {} has version {} but this build of resterm expects version {} \
              (no migrations are supported — this is a personal tool with no backwards compatibility)",
             paths.config.display(),
             config.version,

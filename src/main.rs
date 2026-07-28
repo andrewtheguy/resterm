@@ -41,7 +41,7 @@ fn main() -> Result<()> {
         }
     };
     if cli.show_version {
-        println!("wrustic {}", env!("CARGO_PKG_VERSION"));
+        println!("resterm {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if cli.show_help {

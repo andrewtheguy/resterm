@@ -2284,7 +2284,7 @@ mod tests {
 
     fn boot_app_with_snapshots(snaps: Vec<SnapshotRow>) -> App {
         let tmp = std::env::temp_dir().join(format!(
-            "wrustic-app-test-{}-{}",
+            "resterm-app-test-{}-{}",
             std::process::id(),
             uniq()
         ));

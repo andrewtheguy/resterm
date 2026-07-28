@@ -218,7 +218,7 @@ pub(crate) fn start(
 
     let thread_ctx = ctx.clone();
     let join = thread::Builder::new()
-        .name(format!("wrustic-share-{port}"))
+        .name(format!("resterm-share-{port}"))
         .spawn(move || {
             let rt = match tokio::runtime::Builder::new_current_thread()
                 .enable_io()
@@ -690,7 +690,7 @@ mod tests {
         };
 
         // Bind to an ephemeral port instead of 7834 so this test can run
-        // alongside a real wrustic instance.
+        // alongside a real resterm instance.
         let listeners = crate::local_server::bind_localhost(0).unwrap();
         let port = listeners[0].local_addr().unwrap().port();
         drop(listeners);

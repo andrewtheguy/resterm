@@ -1,6 +1,6 @@
 # Keychain integration
 
-wrustic can optionally store the config passphrase in the OS keychain so
+resterm can optionally store the config passphrase in the OS keychain so
 subsequent launches unlock automatically without prompting.
 
 ## Compile-time feature
@@ -42,7 +42,7 @@ Even when the binary is compiled with the `keychain` feature, you can disable
 it at runtime:
 
 ```sh
-wrustic --no-keychain
+resterm --no-keychain
 ```
 
 This gives the same plain terminal passphrase flow as a binary built without
@@ -55,10 +55,10 @@ When keychain is enabled:
 
 - **Setup**: after entering and confirming the passphrase, a checkbox
   (`[x] Save passphrase to keychain`) lets the user opt in to storing it.
-  The passphrase is saved under service `wrustic` with the instance name as
+  The passphrase is saved under service `resterm` with the instance name as
   the account identifier.
 
-- **Unlock**: wrustic offers `Use passphrase from keychain` and
+- **Unlock**: resterm offers `Use passphrase from keychain` and
   `Enter passphrase manually`. The keychain option skips the input screen when
   a credential is found; otherwise it falls back to the manual TUI prompt.
   Choosing manual entry starts with the save-to-keychain checkbox cleared.

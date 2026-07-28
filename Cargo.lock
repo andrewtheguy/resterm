@@ -1833,6 +1833,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "resterm"
+version = "0.0.32"
+dependencies = [
+ "aes-gcm",
+ "anyhow",
+ "apple-native-keyring-store",
+ "base64",
+ "bytes",
+ "dbus-secret-service-keyring-store",
+ "dirs",
+ "hmac 0.13.0",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "jiff",
+ "keyring-core",
+ "rand 0.10.1",
+ "ratatui",
+ "scrypt",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "toml",
+ "tui-input",
+ "url",
+]
+
+[[package]]
 name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2769,35 +2798,6 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
-
-[[package]]
-name = "wrustic"
-version = "0.0.32"
-dependencies = [
- "aes-gcm",
- "anyhow",
- "apple-native-keyring-store",
- "base64",
- "bytes",
- "dbus-secret-service-keyring-store",
- "dirs",
- "hmac 0.13.0",
- "http-body-util",
- "hyper",
- "hyper-util",
- "jiff",
- "keyring-core",
- "rand 0.10.1",
- "ratatui",
- "scrypt",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "tokio",
- "toml",
- "tui-input",
- "url",
-]
 
 [[package]]
 name = "yoke"

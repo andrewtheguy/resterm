@@ -1,5 +1,5 @@
 [package]
-name = "wrustic"
+name = "resterm"
 version = "0.0.32"
 edition = "2024"
 

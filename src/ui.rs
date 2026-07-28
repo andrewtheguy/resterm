@@ -25,8 +25,8 @@ pub(crate) fn render(frame: &mut Frame, app: &mut App) {
 
 fn render_top_bar(frame: &mut Frame, app: &App, area: Rect) {
     let text = match &app.active_profile_name {
-        Some(name) => format!("wrustic — profile: {name}"),
-        None => "wrustic".to_string(),
+        Some(name) => format!("resterm — profile: {name}"),
+        None => "resterm".to_string(),
     };
     let para = Paragraph::new(text)
         .style(Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD))
@@ -154,7 +154,7 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
             &profile_title("Local repository path", app),
             &app.local_path,
             false,
-            "Filesystem path, e.g. /tmp/wrustic-test-repo",
+            "Filesystem path, e.g. /tmp/resterm-test-repo",
         ),
         Screen::RestConfig => render_rest_config(frame, app, area),
         Screen::S3Location => render_s3_location(frame, app, area),

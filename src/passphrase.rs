@@ -61,7 +61,7 @@ pub(crate) fn compute_instance_sig(instance: &str, key: &[u8; 32]) -> String {
 pub(crate) fn derive_share_signing_key(seed: &[u8]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
-    hasher.update(b"wrustic-share-v1\0");
+    hasher.update(b"resterm-share-v1\0");
     hasher.update(seed);
     hasher.finalize().into()
 }
