@@ -129,9 +129,10 @@ synchronously on `Screen::PassphraseDerivingKey`.
 ## Repository access (`src/repo.rs`, `src/restic.rs`)
 
 `restic.rs` owns subprocess construction and credential transport:
-- `detect()` requires restic >= 0.19.1.
-- `command()` removes inherited restic password variables and configures the
-  repository/backend.
+- `detect()` requires restic >= 0.19.1; all restic invocations disable its
+  shared cache.
+- `command()` disables restic's shared cache, removes inherited restic
+  password variables, and configures the repository/backend.
 - The repository password is written to an anonymous pipe and read by restic
   through `--password-file /dev/stdin`; it never appears in argv or the
   environment.

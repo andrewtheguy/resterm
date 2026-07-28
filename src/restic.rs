@@ -40,7 +40,11 @@ impl ResticError {
 }
 
 pub(crate) fn detect() -> Result<ResticInfo, ResticError> {
-    let output = match Command::new("restic").arg("version").output() {
+    let output = match Command::new("restic")
+        .arg("--no-cache")
+        .arg("version")
+        .output()
+    {
         Ok(o) => o,
         Err(_) => return Err(ResticError::NotFound),
     };
@@ -167,13 +171,15 @@ fn ensure_full_snapshot_id(id: &str) -> Result<()> {
     }
 }
 
-// Run `restic <args>` with credentials passed by the safest mechanism each
-// supports. Never put secrets in argv. Master password is piped via the
-// child's stdin (`--password-file /dev/stdin`); the repo URL and any cloud
-// creds go through env vars (override-only — parent env is inherited so PATH,
-// HOME, SSL_CERT_FILE, HTTP_PROXY, etc. still flow through).
+// Run `restic <args>` without its shared cache and with credentials passed by
+// the safest mechanism each supports. Never put secrets in argv. Master
+// password is piped via the child's stdin (`--password-file /dev/stdin`); the
+// repo URL and any cloud creds go through env vars (override-only — parent env
+// is inherited so PATH, HOME, SSL_CERT_FILE, HTTP_PROXY, etc. still flow
+// through).
 pub(crate) fn command(profile: &Profile, args: &[&str]) -> Result<Command> {
     let mut cmd = Command::new("restic");
+    cmd.arg("--no-cache");
     cmd.arg("--password-file").arg("/dev/stdin");
     cmd.args(args);
     // An explicit password file wins over these in restic, but removing them
@@ -393,6 +399,26 @@ mod tests {
             local_path: "/var/restic/a".into(),
         };
         assert_eq!(repo_url(&p).unwrap(), "/var/restic/a");
+    }
+
+    #[test]
+    fn command_disables_restic_cache() {
+        let profile = Profile::Local {
+            password: "pw".into(),
+            local_path: "/var/restic/a".into(),
+        };
+        let command = command(&profile, &["snapshots", "--json"]).unwrap();
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(
+            args,
+            [
+                "--no-cache",
+                "--password-file",
+                "/dev/stdin",
+                "snapshots",
+                "--json"
+            ]
+        );
     }
 
     #[test]

@@ -123,7 +123,8 @@ stdout directly to the localhost HTTP response.
 The repository password is never placed in an environment variable or command
 argument. Resterm launches restic with `--password-file /dev/stdin`, writes the
 password through the child's anonymous stdin pipe, and closes the pipe before
-reading output.
+reading output. Repository operations also use `--no-cache`, so resterm never
+shares restic's on-disk cache with other CLI instances.
 
 All dev/test artifacts in the snippets below go under the project's `./tmp/`
 directory (already in `.gitignore`) rather than the system `/tmp` — this keeps
