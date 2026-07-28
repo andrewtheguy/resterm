@@ -19,7 +19,8 @@ deletion; additional write workflows are tracked in
 - **Snapshot browsing**: list snapshots, navigate the file tree, view file
   details, and compare two snapshots side-by-side
 - **Snapshot filtering**: narrow by host, tag, or path
-- **Snapshot deletion** via `restic forget`
+- **Snapshot deletion** via `restic forget`; when the repository is locked,
+  `u` on the error screen runs `restic unlock` and retries
 - **File sharing**: one-time signed download URLs served from localhost
 - **Keyboard and mouse navigation**: Vim-style keys, arrow keys, PgUp/PgDn,
   mouse click/scroll; `--no-mouse` to disable

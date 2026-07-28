@@ -16,7 +16,7 @@ use crate::config::{self, BackendKind, Config, PassphraseMeta, Paths, Profile};
 use crate::crypto::Cipher;
 use crate::passphrase::{self, PassphrasePhase};
 use crate::repo::{ContentKind, ContentRow, ContentsPreview, DeleteSnapshotInfo, DiffChange, DiffSummary, FileDetails, RepoSession, SnapshotRow};
-use crate::restic::SnapshotDetails;
+use crate::restic::{self, SnapshotDetails};
 use crate::share::{self, SHARE_TTL, ShareHandle, ShareTarget};
 
 pub(crate) const BACKEND_ORDER: [BackendKind; 3] =
@@ -36,6 +36,7 @@ pub(crate) enum Screen {
     SnapshotDeleteConfirm,
     SnapshotDeleting,
     SnapshotDeleteError(String),
+    ResticUnlocking,
     OpeningSnapshot,
     SnapshotContents,
     LoadingDir,
@@ -1607,9 +1608,16 @@ impl App {
                 _ => {}
             },
 
-            Screen::SnapshotDeleteError(_) => {
-                self.clear_delete_scratch();
-                self.screen = Screen::Snapshots;
+            Screen::SnapshotDeleteError(msg) => {
+                // `u` is only wired up for lock failures. Unlocking cannot
+                // help with authentication, connectivity, or metadata errors.
+                let offer_unlock = restic::is_lock_error(msg);
+                if offer_unlock && matches!(key.code, KeyCode::Char('u') | KeyCode::Char('U')) {
+                    self.screen = Screen::ResticUnlocking;
+                } else {
+                    self.clear_delete_scratch();
+                    self.screen = Screen::Snapshots;
+                }
             }
 
             Screen::SnapshotContents => match key.code {
@@ -1680,6 +1688,7 @@ impl App {
             | Screen::LoadingFileDetails
             | Screen::SnapshotDeleting
             | Screen::SnapshotDeleteLoading
+            | Screen::ResticUnlocking
             | Screen::SnapshotCompareLoading => {}
 
             Screen::FileDetails => match key.code {
