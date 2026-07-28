@@ -156,6 +156,24 @@ pub(crate) fn forget(profile: &Profile, snapshot_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Remove stale repository locks. restic only deletes locks it can prove are
+/// dead (owning process gone, or old enough that a live owner would have
+/// refreshed it) — non-stale locks held by a running restic are left in place,
+/// which is why restic's own error message points at this command. `--json` is
+/// passed so any message restic prints is structured rather than prose; the
+/// exit status is what we act on.
+pub(crate) fn unlock(profile: &Profile) -> Result<()> {
+    run(profile, &["unlock", "--json"])?;
+    Ok(())
+}
+
+/// True when a restic failure was caused by an existing repository lock — i.e.
+/// when offering `restic unlock` is the right next step.
+pub(crate) fn is_lock_error(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    message.contains("unable to create lock") || message.contains("already locked")
+}
+
 // Restic snapshot ids are SHA-256 hashes — 32 bytes = 64 hex chars
 // (either case accepted; hex is case-insensitive). Restic's CLI accepts
 // shorter prefixes, but we refuse them so callers can't accidentally act on
@@ -523,6 +541,25 @@ mod tests {
         assert_eq!(arr[0].tags, vec!["weekly"]);
         let sum = arr[0].summary.as_ref().unwrap();
         assert_eq!(sum.total_files_processed, Some(10));
+    }
+
+    #[test]
+    fn detects_lock_errors() {
+        // Verbatim shape of what restic writes to stderr.
+        let real = "restic exited with status exit status: 11: unable to create lock in \
+                    backend: repository is already locked by PID 7344 on it3s-MBP-4 by it3 \
+                    (UID 501, GID 20)\nlock was created at 2026-07-25 10:10:31 \
+                    (20h42m24.765658s ago)\nstorage ID 245b8820\nthe `unlock` command can be \
+                    used to remove stale locks";
+        assert!(is_lock_error(real));
+        assert!(is_lock_error(
+            "Fatal: unable to create lock in backend: circuit breaker open"
+        ));
+        assert!(is_lock_error("repository is ALREADY LOCKED"));
+        assert!(!is_lock_error(
+            "restic not found on PATH. Install restic >= 0.19.1 to use resterm."
+        ));
+        assert!(!is_lock_error("repository password is incorrect"));
     }
 
     #[test]

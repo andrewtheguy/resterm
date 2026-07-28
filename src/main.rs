@@ -238,7 +238,39 @@ fn run(
                 Err(e) => {
                     app.delete_details_parsed = None;
                     app.delete_details_raw = None;
+                    // Keep the target so an unlock-and-retry returns to the
+                    // same snapshot.
+                    app.delete_target = Some(snapshot_id);
                     app.screen = Screen::SnapshotDeleteError(format!("{e:#}"));
+                }
+            }
+            continue;
+        }
+
+        if matches!(app.screen, Screen::ResticUnlocking) {
+            let idx = app.loading_index;
+            let Some((_, profile)) = app.config.profile_at(idx) else {
+                app.screen = Screen::SnapshotDeleteError(
+                    "Selected profile no longer exists.".into(),
+                );
+                continue;
+            };
+            match restic::unlock(profile) {
+                // Re-enter the delete flow so details and the preview are
+                // rebuilt and the confirmation is shown again.
+                Ok(()) => {
+                    app.delete_info = None;
+                    app.delete_details_parsed = None;
+                    app.delete_details_raw = None;
+                    app.screen = if app.delete_target.is_some() {
+                        Screen::SnapshotDeleteLoading
+                    } else {
+                        Screen::Loading
+                    };
+                }
+                Err(e) => {
+                    app.screen =
+                        Screen::SnapshotDeleteError(format!("restic unlock failed: {e:#}"));
                 }
             }
             continue;

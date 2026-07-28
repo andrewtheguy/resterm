@@ -140,6 +140,10 @@ synchronously on `Screen::PassphraseDerivingKey`.
 - `stream_dump()` streams file bytes with backpressure and kills the child if
   the HTTP client disconnects.
 - `forget()` performs the repository mutation currently exposed by the UI.
+- `unlock()` runs `restic unlock --json` when `is_lock_error()` identifies a
+  lock failure during snapshot deletion. The TUI offers this with `u`, then
+  rebuilds the delete confirmation and retries the flow after stale locks are
+  removed.
   Future write workflows belong beside it and must retain the same credential
   and structured-output boundaries.
 

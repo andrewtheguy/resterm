@@ -88,7 +88,13 @@ fn bottom_bar_text(app: &App) -> &'static str {
         Screen::SnapshotDeleteConfirm => {
             "y confirm delete  Up/Dn scroll  PgUp/PgDn page  r raw JSON  n/Esc cancel"
         }
-        Screen::SnapshotDeleteError(_) => "any key to continue",
+        Screen::SnapshotDeleteError(msg) => {
+            if crate::restic::is_lock_error(msg) {
+                "u run `restic unlock` and retry  any other key to continue"
+            } else {
+                "any key to continue"
+            }
+        }
         Screen::SnapshotContents => {
             "Up/Dn move  PgUp/PgDn page  g/G top/bottom  Enter open  Backspace up  r reload  q/Esc back"
         }
@@ -120,6 +126,7 @@ fn bottom_bar_text(app: &App) -> &'static str {
         | Screen::Verifying
         | Screen::SnapshotDeleting
         | Screen::SnapshotDeleteLoading
+        | Screen::ResticUnlocking
         | Screen::SnapshotCompareLoading => "working…",
         Screen::CreateProfileName => "type  Enter submit  Esc cancel",
         Screen::BackendChoice => "Up/Dn move  PgUp/PgDn page  Enter pick  Esc back",
@@ -217,11 +224,23 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
             frame.render_widget(para, area);
         }
         Screen::SnapshotDeleteError(msg) => {
-            let body = format!("{msg}\n\nPress any key to return to the snapshot list.");
+            let body = if crate::restic::is_lock_error(msg) {
+                format!(
+                    "{msg}\n\nPress u to run `restic unlock` (removes stale locks only) \
+                     and retry, or any other key to return to the snapshot list."
+                )
+            } else {
+                format!("{msg}\n\nPress any key to return to the snapshot list.")
+            };
             let para = Paragraph::new(body)
                 .style(Style::new().fg(Color::Red))
                 .wrap(Wrap { trim: false })
                 .block(Block::bordered().title("Delete unavailable"));
+            frame.render_widget(para, area);
+        }
+        Screen::ResticUnlocking => {
+            let para = Paragraph::new("Running `restic unlock` — removing stale locks…")
+                .block(Block::bordered().title("Unlocking repository"));
             frame.render_widget(para, area);
         }
         Screen::OpeningSnapshot => {
