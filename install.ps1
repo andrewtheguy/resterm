@@ -313,11 +313,36 @@ function Download-Only {
 
     $url = "$BaseUrl/$BinaryName"
     $outputFile = Join-Path (Get-Location) $BinaryName
+    # Stage in a temp directory rather than writing straight to $outputFile. A
+    # failed transfer would otherwise leave a truncated binary sitting at the
+    # advertised name, and a checksum mismatch would delete whatever file the
+    # user already had there. Nothing touches $outputFile until the download is
+    # verified and the binary has run.
+    $tempDir = Join-Path $env:TEMP "resterm-download-$(Get-Random)"
+    $tempBinary = Join-Path $tempDir $BinaryName
 
-    Download-Binary -Url $url -OutputPath $outputFile -ExpectedChecksum $ExpectedChecksum
-    Test-Binary -Path $outputFile
+    try {
+        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
-    Print-Info "Binary saved to: $outputFile"
+        Download-Binary -Url $url -OutputPath $tempBinary -ExpectedChecksum $ExpectedChecksum
+        Test-Binary -Path $tempBinary
+
+        try {
+            Move-Item -Path $tempBinary -Destination $outputFile -Force
+        }
+        catch {
+            Print-Error "Failed to write $($outputFile): $_"
+            exit 1
+        }
+
+        Print-Info "Binary saved to: $outputFile"
+    }
+    finally {
+        # Runs even on the `exit 1` paths inside Download-Binary/Test-Binary.
+        if (Test-Path $tempDir) {
+            Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 # Download to a temporary location, test it, then install
@@ -571,14 +596,11 @@ function Main {
     Start-Installation -Tag $tag -DownloadOnly:$script:DownloadOnly
 }
 
-try {
-    # `@args` forwards the script's own arguments, so `.\install.ps1 -DownloadOnly`
-    # works as well as the env-var channel used by `iex`.
-    Main @args
-}
-finally {
-    # Clean up the fallback args variable so it can't leak into later sessions.
-    if (Test-Path env:RESTERM_INSTALL_ARGS) {
-        Remove-Item env:RESTERM_INSTALL_ARGS -ErrorAction SilentlyContinue
-    }
-}
+# `@args` forwards the script's own arguments, so `.\install.ps1 -DownloadOnly`
+# works as well as the env-var channel used by `iex`.
+#
+# RESTERM_INSTALL_ARGS is read but never unset: the caller created it, so it is
+# theirs to clear. (`$env:` variables are process-scoped anyway — they are
+# inherited by child processes but invisible to any later session, so there is
+# nothing to "leak".)
+Main @args

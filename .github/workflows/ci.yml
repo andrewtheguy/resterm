@@ -92,3 +92,14 @@ jobs:
             live_restic_delete_round_trip \
             live_restic_metadata_round_trip \
             e2e_serves_and_validates_signed_url
+
+      # Windows only. `init_store` is otherwise reached solely from main(), so
+      # without this the credential-store path is compiled under --all-features
+      # but never executed: this is what proves Store::new / set_password /
+      # get_password actually talk to Credential Manager. The other runners are
+      # excluded because their stores need an interactive session — an unlocked
+      # login keychain on macOS, a running secret-service daemon on Linux (which
+      # does not even build the feature here).
+      - name: Live keychain test
+        if: runner.os == 'Windows'
+        run: cargo test ${{ matrix.features }} -- --ignored live_keychain_round_trip

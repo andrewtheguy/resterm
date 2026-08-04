@@ -45,6 +45,22 @@ pub(crate) fn load_passphrase(instance: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// Deletes the test credential on unwind, so a failing assertion can't
+    /// leave a stray entry behind in the user's real credential store.
+    struct Cleanup(String);
+
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            // Best-effort and deliberately silent: on the happy path the test
+            // has already deleted the entry, so the expected outcome here is a
+            // "no such credential" error. Panicking in Drop during an unwind
+            // would abort the process and hide the real failure.
+            if let Ok(entry) = keyring_core::Entry::new(SERVICE, &self.0) {
+                let _ = entry.delete_credential();
+            }
+        }
+    }
+
     // Round-trips a throwaway secret through the real OS credential store.
     // #[ignore] because it writes to the user's keychain/Credential Manager
     // and, on Linux, needs an unlocked Secret Service session.
@@ -54,6 +70,9 @@ mod tests {
         assert!(init_store(), "no native credential store available");
         let instance = format!("resterm-test-{}", std::process::id());
         save_passphrase(&instance, "correct horse battery staple").expect("save");
+        // Armed the moment the entry exists — every assertion below is now
+        // covered whether it passes or panics.
+        let _cleanup = Cleanup(instance.clone());
         assert_eq!(
             load_passphrase(&instance).as_deref(),
             Some("correct horse battery staple")
