@@ -14,7 +14,7 @@ use tui_input::backend::crossterm::EventHandler;
 use crate::config::{self, BackendKind, Config, ConfigLock, PassphraseMeta, Paths, Profile};
 use crate::crypto::Cipher;
 use crate::passphrase::{self, PassphrasePhase};
-use crate::repo::{ContentKind, ContentRow, ContentsPreview, DeleteSnapshotInfo, DiffChange, DiffSummary, FileDetails, RepoSession, SnapshotRow};
+use crate::repo::{ContentKind, ContentRow, ContentsPreview, DeleteSnapshotInfo, DiffChange, DiffSummary, FileDetails, RepoSession, SnapshotRow, TreeCache};
 use crate::restic::{self, SnapshotDetails};
 use crate::share::{self, SHARE_TTL, ShareHandle, ShareTarget};
 
@@ -276,6 +276,11 @@ pub(crate) struct App {
     pub(crate) filter_pending_kind: Option<FilterKind>,
     pub(crate) active_profile_name: Option<String>,
     pub(crate) repo_session: Option<RepoSession>,
+    // Restic tree objects read while browsing, keyed by tree id. Outlives
+    // `repo_session` deliberately: tree ids are content-derived, so entries
+    // never go stale, and consecutive snapshots of one source share the tree of
+    // every directory that did not change between them.
+    pub(crate) tree_cache: TreeCache,
     pub(crate) browse_snapshot_id: String,
     pub(crate) browse_stack: Vec<BrowseFrame>,
     pub(crate) pending_descend: Option<(String, String)>,
@@ -396,6 +401,7 @@ impl App {
             filter_pending_kind: None,
             active_profile_name: None,
             repo_session: None,
+            tree_cache: TreeCache::default(),
             browse_snapshot_id: String::new(),
             browse_stack: Vec::new(),
             pending_descend: None,

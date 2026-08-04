@@ -72,6 +72,10 @@ struct includes:
   whenever `enter_home()` runs.
 - Snapshot browse state: `snapshots`, `repo_session`, `browse_stack`,
   `pending_descend` / `pending_file_lookup` / `pending_refresh_path`.
+- Two caches keyed on content-derived ids, so neither can go stale:
+  `tree_cache` (directory listings, shared across snapshots) and
+  `preview_cache` (delete-screen previews, dropped when a snapshot is
+  forgotten).
 - Share dialog: `share_target`, `share_handle`, `share_url`, etc.
 - Passphrase dialog: `passphrase_input`, `passphrase_confirm`,
   `passphrase_instance_input`, `passphrase_phase`, `passphrase_error`.
@@ -178,6 +182,16 @@ synchronously on `Screen::PassphraseDerivingKey`.
 - `cat snapshot` and `cat tree snapshot:path` preserve tree IDs, content
   hashes, ownership, link targets, and timestamps.
 - A per-browse `RepoSession` maps tree IDs to restic snapshot-path selectors.
+  Those selectors are per-session — a selector names a path in one snapshot —
+  but the parsed trees themselves live in a `TreeCache` held by `App`, which
+  outlives the session. A tree ID is the hash of the tree object's plaintext, so
+  an entry can never go stale and never needs invalidating; and because an
+  incremental backup reuses the tree of every directory that did not change,
+  browsing a second snapshot of the same source mostly reads out of the cache
+  rather than off the backend. `list_tree` re-registers child selectors on a
+  cache hit as well as a miss, since the cached tree may have been read under a
+  different snapshot. The cache is capped at `TREE_CACHE_MAX_TREES`; past that,
+  further trees are simply not stored.
 - `diff --json` supplies JSONL changes and statistics.
 - The snapshot-delete preview walks the top of a snapshot breadth-first with
   `ls --json <snapshot> <dir…>`. Positional arguments are directory filters and

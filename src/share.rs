@@ -654,7 +654,7 @@ mod tests {
         restic::run(&profile, &["init"]).expect("init");
         restic::run(&profile, &["backup", source.to_str().unwrap()]).expect("backup");
 
-        let repo = crate::repo::open_indexed(&profile).expect("open repo");
+        let repo = crate::repo::open_indexed(&profile, Default::default()).expect("open repo");
         let snaps = crate::repo::load_snapshots(&profile).expect("list snapshots");
         let snap = snaps.first().expect("at least one snapshot");
         let snap_id = snap.id.clone();

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
@@ -81,10 +81,81 @@ pub(crate) struct FileDetails {
     pub(crate) content_hashes: Vec<String>,
 }
 
+/// Parsed restic tree objects, keyed by tree id.
+///
+/// A restic tree id is the hash of the tree object's plaintext, so an entry can
+/// never go stale and never has to be invalidated: the same id always names the
+/// same directory contents, in this repository or any other. That is also what
+/// makes the cache worth keeping across snapshots — an incremental backup reuses
+/// the tree of every directory that did not change, so browsing a second
+/// snapshot of the same source reads most of its directories out of here instead
+/// of off the backend, which on a remote repository is a round trip apiece.
+///
+/// Held by `App` rather than by [`RepoSession`], which is dropped and rebuilt
+/// every time a snapshot is opened.
+#[derive(Clone, Default)]
+pub(crate) struct TreeCache {
+    trees: Arc<Mutex<HashMap<String, Arc<TreeDocument>>>>,
+}
+
+/// Bound on the cache, so that walking a very large tree cannot grow it without
+/// limit. Past this, further trees are simply not stored: the ones already held
+/// are those nearest the directories opened first, which are also the ones
+/// walked back through most often.
+const TREE_CACHE_MAX_TREES: usize = 4096;
+
+impl TreeCache {
+    fn lock(&self) -> Result<MutexGuard<'_, HashMap<String, Arc<TreeDocument>>>> {
+        self.trees
+            .lock()
+            .map_err(|_| anyhow!("restic tree cache was poisoned"))
+    }
+
+    fn get(&self, tree_id: &str) -> Result<Option<Arc<TreeDocument>>> {
+        Ok(self.lock()?.get(tree_id).cloned())
+    }
+
+    fn insert(&self, tree_id: &str, tree: Arc<TreeDocument>) -> Result<()> {
+        let mut trees = self.lock()?;
+        if trees.len() < TREE_CACHE_MAX_TREES {
+            trees.insert(tree_id.to_string(), tree);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.lock().expect("tree cache").len()
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct RepoSession {
     profile: Profile,
+    /// Maps a tree id to the `<snapshot>:<path>` selector restic needs to fetch
+    /// it. Unlike [`TreeCache`] this is per-session: a selector names a path in
+    /// one snapshot, so it is rebuilt as each snapshot is walked.
     tree_selectors: Arc<Mutex<HashMap<String, String>>>,
+    trees: TreeCache,
+}
+
+impl RepoSession {
+    fn selector_for(&self, tree_id: &str) -> Result<String> {
+        self.tree_selectors
+            .lock()
+            .map_err(|_| anyhow!("restic tree selector cache was poisoned"))?
+            .get(tree_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("no restic snapshot path registered for tree `{tree_id}`"))
+    }
+
+    fn register_selector(&self, tree_id: String, selector: String) -> Result<()> {
+        self.tree_selectors
+            .lock()
+            .map_err(|_| anyhow!("restic tree selector cache was poisoned"))?
+            .insert(tree_id, selector);
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -103,7 +174,7 @@ struct TreeDocument {
     nodes: Vec<TreeNode>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 struct TreeNode {
     name: String,
     #[serde(rename = "type")]
@@ -168,24 +239,43 @@ pub(crate) fn load_snapshots(profile: &Profile) -> Result<Vec<SnapshotRow>> {
         .collect())
 }
 
-pub(crate) fn open_indexed(profile: &Profile) -> Result<RepoSession> {
+/// Open a browsing session. `trees` is shared with every other session opened
+/// from the same [`TreeCache`], which is how a directory read while browsing one
+/// snapshot is still in hand when the next snapshot reaches the same tree id.
+pub(crate) fn open_indexed(profile: &Profile, trees: TreeCache) -> Result<RepoSession> {
     Ok(RepoSession {
         profile: profile.clone(),
         tree_selectors: Arc::new(Mutex::new(HashMap::new())),
+        trees,
     })
 }
 
-fn load_tree(repo: &RepoSession, tree_id: &str) -> Result<TreeDocument> {
-    let selector = repo
-        .tree_selectors
-        .lock()
-        .map_err(|_| anyhow!("restic tree selector cache was poisoned"))?
-        .get(tree_id)
-        .cloned()
-        .ok_or_else(|| anyhow!("no restic snapshot path registered for tree `{tree_id}`"))?;
-    let output = restic::run(&repo.profile, &["cat", "tree", &selector, "--json"])?;
-    serde_json::from_slice(&output)
-        .with_context(|| format!("parsing restic tree JSON for `{selector}`"))
+fn load_tree(repo: &RepoSession, tree_id: &str) -> Result<Arc<TreeDocument>> {
+    load_tree_with(repo, tree_id, |selector| {
+        restic::run(&repo.profile, &["cat", "tree", selector, "--json"])
+    })
+}
+
+/// The cache check around one `restic cat tree`, with the fetch injected so the
+/// caching itself can be tested without a repository.
+///
+/// A hit needs no selector at all, which matters beyond saving the lookup: the
+/// tree may have been read under a different snapshot entirely.
+fn load_tree_with(
+    repo: &RepoSession,
+    tree_id: &str,
+    fetch: impl FnOnce(&str) -> Result<Vec<u8>>,
+) -> Result<Arc<TreeDocument>> {
+    if let Some(tree) = repo.trees.get(tree_id)? {
+        return Ok(tree);
+    }
+    let selector = repo.selector_for(tree_id)?;
+    let output = fetch(&selector)?;
+    let tree: TreeDocument = serde_json::from_slice(&output)
+        .with_context(|| format!("parsing restic tree JSON for `{selector}`"))?;
+    let tree = Arc::new(tree);
+    repo.trees.insert(tree_id, Arc::clone(&tree))?;
+    Ok(tree)
 }
 
 pub(crate) fn snapshot_root_tree(repo: &RepoSession, snapshot_id: &str) -> Result<String> {
@@ -194,24 +284,18 @@ pub(crate) fn snapshot_root_tree(repo: &RepoSession, snapshot_id: &str) -> Resul
         .tree
         .ok_or_else(|| anyhow!("snapshot `{snapshot_id}` has no root tree"))?;
     let tree_id = parse_tree_id(&tree)?;
-    repo.tree_selectors
-        .lock()
-        .map_err(|_| anyhow!("restic tree selector cache was poisoned"))?
-        .insert(tree_id.clone(), format!("{snapshot_id}:/"));
+    repo.register_selector(tree_id.clone(), format!("{snapshot_id}:/"))?;
     Ok(tree_id)
 }
 
 pub(crate) fn list_tree(repo: &RepoSession, tree_id: &str) -> Result<Vec<ContentRow>> {
-    let parent_selector = repo
-        .tree_selectors
-        .lock()
-        .map_err(|_| anyhow!("restic tree selector cache was poisoned"))?
-        .get(tree_id)
-        .cloned()
-        .ok_or_else(|| anyhow!("no restic snapshot path registered for tree `{tree_id}`"))?;
+    // Read before the tree, and on a cache hit as much as on a miss: a child's
+    // selector names a path in *this* snapshot, so it has to be registered even
+    // when the tree itself came out of the cache under another snapshot.
+    let parent_selector = repo.selector_for(tree_id)?;
     let mut rows = load_tree(repo, tree_id)?
         .nodes
-        .into_iter()
+        .iter()
         .map(|node| {
             let subtree = node.subtree.as_deref().map(parse_tree_id).transpose()?;
             if let Some(ref subtree) = subtree {
@@ -223,16 +307,13 @@ pub(crate) fn list_tree(repo: &RepoSession, tree_id: &str) -> Result<Vec<Content
                 } else {
                     format!("{}/{}", path.trim_end_matches('/'), node.name)
                 };
-                repo.tree_selectors
-                    .lock()
-                    .map_err(|_| anyhow!("restic tree selector cache was poisoned"))?
-                    .insert(subtree.clone(), format!("{snapshot}:{child_path}"));
+                repo.register_selector(subtree.clone(), format!("{snapshot}:{child_path}"))?;
             }
             Ok(ContentRow {
-                name: node.name,
+                name: node.name.clone(),
                 kind: node_kind(&node.kind),
                 size: node.size,
-                mtime: display_time(node.mtime),
+                mtime: display_time(node.mtime.clone()),
                 subtree,
             })
         })
@@ -253,8 +334,9 @@ pub(crate) fn get_file_details(
 ) -> Result<FileDetails> {
     let node = load_tree(repo, tree_id)?
         .nodes
-        .into_iter()
+        .iter()
         .find(|node| node.name == file_name)
+        .cloned()
         .ok_or_else(|| anyhow!("file `{file_name}` not found in tree"))?;
     let (kind, kind_label) = match node.kind.as_str() {
         "file" => (ContentKind::File, "file".to_string()),
@@ -853,6 +935,105 @@ mod tests {
         assert!(!preview.truncated);
     }
 
+    // ──── Tree cache ────────────────────────────────────────────────────
+
+    fn tree_id(byte: &str) -> String {
+        byte.repeat(32)
+    }
+
+    // A directory holding one subdirectory and one file.
+    fn tree_json(subtree: &str) -> Vec<u8> {
+        format!(
+            r#"{{"nodes":[
+                {{"name":"sub","type":"dir","subtree":"{subtree}"}},
+                {{"name":"a.txt","type":"file","size":3}}
+            ]}}"#
+        )
+        .into_bytes()
+    }
+
+    fn test_session(trees: TreeCache) -> RepoSession {
+        let profile = Profile::Local {
+            password: "pw".into(),
+            local_path: "tmp/never-touched".into(),
+        };
+        open_indexed(&profile, trees).expect("session")
+    }
+
+    #[test]
+    fn tree_cache_serves_a_second_read_without_a_restic_call() {
+        let root = tree_id("aa");
+        let repo = test_session(TreeCache::default());
+        repo.register_selector(root.clone(), "snap:/".into()).unwrap();
+
+        let mut calls = 0;
+        let mut load = |repo: &RepoSession| {
+            load_tree_with(repo, &root, |_| {
+                calls += 1;
+                Ok(tree_json(&tree_id("bb")))
+            })
+            .expect("tree")
+        };
+        let first = load(&repo);
+        let second = load(&repo);
+        assert_eq!(calls, 1, "the second read must come out of the cache");
+        assert!(Arc::ptr_eq(&first, &second), "and must be the same object");
+    }
+
+    // The payoff: an incremental backup reuses the tree of every unchanged
+    // directory, so the second snapshot browsed reads them out of the cache.
+    #[test]
+    fn tree_cache_is_shared_across_sessions() {
+        let root = tree_id("aa");
+        let trees = TreeCache::default();
+
+        let first = test_session(trees.clone());
+        first.register_selector(root.clone(), "snap1:/".into()).unwrap();
+        load_tree_with(&first, &root, |_| Ok(tree_json(&tree_id("bb")))).expect("first");
+
+        let second = test_session(trees);
+        second.register_selector(root.clone(), "snap2:/".into()).unwrap();
+        load_tree_with(&second, &root, |_| panic!("must not refetch a cached tree"))
+            .expect("second");
+    }
+
+    // A cached tree carries no selectors with it, and a selector is only valid
+    // for the snapshot it was built under. Listing must therefore re-register
+    // every child under the current snapshot even when nothing was fetched —
+    // otherwise descending into the directory fails with "no restic snapshot
+    // path registered".
+    #[test]
+    fn listing_a_cached_tree_still_registers_children_for_this_snapshot() {
+        let root = tree_id("aa");
+        let child = tree_id("bb");
+        let trees = TreeCache::default();
+
+        let first = test_session(trees.clone());
+        first.register_selector(root.clone(), "snap1:/".into()).unwrap();
+        load_tree_with(&first, &root, |_| Ok(tree_json(&child))).expect("prime the cache");
+        let rows = list_tree(&first, &root).expect("rows");
+        assert_eq!(rows[0].subtree.as_deref(), Some(child.as_str()));
+        assert_eq!(first.selector_for(&child).unwrap(), "snap1:/sub");
+
+        let second = test_session(trees);
+        second.register_selector(root.clone(), "snap2:/".into()).unwrap();
+        list_tree(&second, &root).expect("rows from the cached tree");
+        assert_eq!(second.selector_for(&child).unwrap(), "snap2:/sub");
+    }
+
+    #[test]
+    fn tree_cache_stops_growing_at_its_cap() {
+        let trees = TreeCache::default();
+        let empty = || Arc::new(TreeDocument { nodes: Vec::new() });
+        for i in 0..TREE_CACHE_MAX_TREES + 10 {
+            trees.insert(&format!("{i:064x}"), empty()).unwrap();
+        }
+        assert_eq!(trees.len(), TREE_CACHE_MAX_TREES);
+        // What is held is what was read first, which is what a browse walks
+        // back through: the trees nearest the roots already opened.
+        assert!(trees.get(&format!("{:064x}", 0)).unwrap().is_some());
+    }
+
     #[test]
     #[ignore]
     fn live_restic_metadata_round_trip() {
@@ -879,10 +1060,24 @@ mod tests {
         let snapshots = load_snapshots(&profile).expect("snapshots");
         assert_eq!(snapshots.len(), 2);
 
-        let session = open_indexed(&profile).expect("session");
+        let trees = TreeCache::default();
+        let session = open_indexed(&profile, trees.clone()).expect("session");
         let root_tree = snapshot_root_tree(&session, &snapshots[0].id).expect("root tree");
         let root_rows = list_tree(&session, &root_tree).expect("root rows");
         assert!(!root_rows.is_empty());
+
+        // A second session over the same cache reads the same tree without
+        // fetching it again, and still resolves its children.
+        let reopened = open_indexed(&profile, trees.clone()).expect("second session");
+        let cached_at = trees.len();
+        let same_root = snapshot_root_tree(&reopened, &snapshots[0].id).expect("root tree again");
+        assert_eq!(same_root, root_tree);
+        let cached_rows = list_tree(&reopened, &same_root).expect("rows from cache");
+        let names = |rows: &[ContentRow]| {
+            rows.iter().map(|row| row.name.clone()).collect::<Vec<_>>()
+        };
+        assert_eq!(names(&cached_rows), names(&root_rows));
+        assert_eq!(trees.len(), cached_at, "listing again must not add trees");
 
         let preview =
             preview_snapshot_contents(&session, &snapshots[0].id, &snapshots[0].paths, 50)
@@ -919,7 +1114,7 @@ mod tests {
         let previous = snapshots.get(1).expect("second seeded Garage snapshot");
         assert!(snapshot.tags.iter().any(|tag| tag == "garage-e2e-second"));
 
-        let session = open_indexed(&profile).expect("open Garage session");
+        let session = open_indexed(&profile, TreeCache::default()).expect("open Garage session");
         let (summary, changes) =
             diff_snapshots(&session, &previous.id, &snapshot.id).expect("diff Garage snapshots");
         assert!(summary.changed_files > 0);
