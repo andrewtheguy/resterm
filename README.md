@@ -178,7 +178,7 @@ Then in the TUI:
 
 ## Relationship to the `restic` binary
 
-`resterm` requires **restic >= 0.19.1** on `PATH`. Repository reads and the
+`resterm` requires **restic >= 0.19** on `PATH`. Repository reads and the
 exposed `forget` operation run as short-lived restic subprocesses. Structured
 operations use restic's JSON/JSONL output; downloads stream `restic dump`
 stdout directly to the localhost HTTP response.
@@ -188,8 +188,13 @@ argument. Resterm writes it through the child's anonymous stdin pipe and closes
 the pipe before reading output. On Unix restic is pointed at that pipe with
 `--password-file /dev/stdin`; Windows has no such path and doesn't need one,
 since restic reads the password directly from stdin whenever stdin is not a
-terminal. Repository operations also use `--no-cache`, so resterm never shares
-restic's on-disk cache with other CLI instances.
+terminal.
+
+Two of restic's global flags are applied throughout. `--no-cache` goes on every
+invocation, so resterm never shares restic's on-disk cache with other CLI
+instances. `--json` goes on every invocation that supports it — including
+`version` and `forget` — so restic's output and messages are structured rather
+than prose. `dump` is the one exception: its stdout is the file's raw bytes.
 
 All dev/test artifacts in the snippets below go under the project's `./tmp/`
 directory (already in `.gitignore`) rather than the system `/tmp` — this keeps
@@ -218,7 +223,7 @@ independently:
 ```
 
 `seed` and `test` are also available separately. Test state stays under
-`./tmp/garage-e2e/`. The E2E runner requires restic >= 0.19.1 from
+`./tmp/garage-e2e/`. The E2E runner requires restic >= 0.19 from
 `./tmp/tools/restic` or `PATH`; use `RESTIC_BIN=/path/to/restic` to select
 another binary. The repository password is piped to
 `--password-file /dev/stdin` and is never exported.

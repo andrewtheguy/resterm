@@ -23,7 +23,7 @@ machine. This shapes the on-disk permissions, the threat model in
 flat `App` struct.
 
 It does not reimplement restic's repository engine:
-- Repository operations go through restic >= 0.19.1 subprocesses.
+- Repository operations go through restic >= 0.19 subprocesses.
 - Structured results use restic JSON/JSONL output, while file content and
   progress-oriented operations are streamed over pipes.
 - Read and write workflows share the same subprocess boundary and password
@@ -141,10 +141,16 @@ synchronously on `Screen::PassphraseDerivingKey`.
 ## Repository access (`src/repo.rs`, `src/restic.rs`)
 
 `restic.rs` owns subprocess construction and credential transport:
-- `detect()` requires restic >= 0.19.1; all restic invocations disable its
-  shared cache.
-- `command()` disables restic's shared cache, removes inherited restic
-  password variables, and configures the repository/backend.
+- `detect()` requires restic >= 0.19, and reads the version from
+  `restic version --json` rather than parsing the prose line.
+- Two restic global flags apply throughout. `--no-cache` goes on every
+  invocation, added centrally in `command()` (and in `detect()`), so resterm
+  never shares restic's on-disk cache with other CLI instances. `--json` goes
+  on every invocation that supports it, added by each caller next to its
+  subcommand; `dump` is the sole exception, since its stdout is the file's raw
+  bytes.
+- `command()` also removes inherited restic password variables and configures
+  the repository/backend.
 - The repository password is written to an anonymous pipe on the child's stdin;
   it never appears in argv or the environment. On Unix restic is pointed at it
   explicitly with `--password-file /dev/stdin`. Windows has no such path, and

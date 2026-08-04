@@ -1,5 +1,6 @@
 - no backward compatibility of any kind since it is a private and personal project.
-- use restic >= 0.19.1 for repository reads and writes; parse JSON/JSONL for structured reads and stream `restic dump` for file content
+- use restic >= 0.19 for repository reads and writes; parse JSON/JSONL for structured reads and stream `restic dump` for file content
+- two restic global flags are always in play. `--no-cache` on every invocation, so resterm never shares restic's on-disk cache with other CLI instances. `--json` on every invocation that supports it — being global that is nearly all of them, `version` and `forget` included — so output and messages are structured rather than prose. The one exception is `dump`, whose stdout is the file's raw bytes; it takes `--no-cache` but not `--json`.
 - pass the repository password through an anonymous stdin pipe, never through an environment variable or argv: `--password-file /dev/stdin` on Unix, and on Windows (which has no such path) restic's own fallback of reading stdin when stdin is not a terminal
 - use this project root's tmp/ folder for dev/test data and workspace to avoid permission issues
 - run cargo clippy and cargo test with --all-features after rust code changes, don't run cargo fmt because it affects diff
