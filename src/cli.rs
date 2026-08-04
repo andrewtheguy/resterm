@@ -9,8 +9,11 @@ Usage: resterm [OPTIONS]
 
 Options:
   -c, --config-dir <PATH>     Use <PATH> as the resterm config directory instead
-                              of the platform default (~/.config/resterm on Linux).
-                              The directory will be created on first run.
+                              of the platform default: ~/.config/resterm (Linux),
+                              ~/Library/Application Support/resterm (macOS), or
+                              %APPDATA%\\resterm (Windows).
+                              The directory will be created on first run, and is
+                              locked for as long as resterm is running.
   -p, --port <N>              Localhost port for the file-share dialog.
                               Default: 7834.
       --no-mouse              Disable mouse reporting (useful for QA / copy-paste).

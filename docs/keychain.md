@@ -14,7 +14,7 @@ cargo build --release --features keychain
 
 The feature uses `keyring-core` with platform-specific credential stores:
 `apple-native-keyring-store` on macOS, `dbus-secret-service-keyring-store` on
-Linux.
+Linux, `windows-native-keyring-store` on Windows.
 
 ### Why not enabled on Linux by default
 
@@ -75,3 +75,19 @@ Platform credential stores (via `keyring-core`):
 |----------|-------------|---------|
 | macOS    | `apple-native-keyring-store` | macOS Keychain (Security.framework) |
 | Linux    | `dbus-secret-service-keyring-store` | D-Bus secret-service (GNOME Keyring / KDE Wallet) |
+| Windows  | `windows-native-keyring-store` | Windows Credential Manager (Generic Credentials) |
+
+On Windows the store needs no daemon and no extra build dependency — the
+Credential Manager is part of the OS — so `--features keychain` works out of
+the box:
+
+```sh
+cargo build --release --features keychain
+```
+
+Credentials land in the Generic Credentials vault and are readable only by the
+logged-in user; `control /name Microsoft.CredentialManager` shows them.
+
+`cargo test --all-features -- --ignored live_keychain_round_trip` writes a
+throwaway entry to the real store and deletes it again, which is the quickest
+way to confirm the platform store is reachable.

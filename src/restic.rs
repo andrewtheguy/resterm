@@ -191,13 +191,19 @@ fn ensure_full_snapshot_id(id: &str) -> Result<()> {
 
 // Run `restic <args>` without its shared cache and with credentials passed by
 // the safest mechanism each supports. Never put secrets in argv. Master
-// password is piped via the child's stdin (`--password-file /dev/stdin`); the
-// repo URL and any cloud creds go through env vars (override-only — parent env
-// is inherited so PATH, HOME, SSL_CERT_FILE, HTTP_PROXY, etc. still flow
-// through).
+// password is piped through an anonymous pipe on the child's stdin; the repo
+// URL and any cloud creds go through env vars (override-only — parent env is
+// inherited so PATH, HOME, SSL_CERT_FILE, HTTP_PROXY, etc. still flow through).
 pub(crate) fn command(profile: &Profile, args: &[&str]) -> Result<Command> {
     let mut cmd = Command::new("restic");
     cmd.arg("--no-cache");
+    // Windows has no `/dev/stdin` path for restic to open. It doesn't need
+    // one: when stdin is not a terminal — which it never is here, since
+    // `command` always pipes it — restic reads the repository password
+    // straight off stdin. So the flag is Unix-only and both platforms carry
+    // the secret over the same anonymous pipe, never argv and never the
+    // environment.
+    #[cfg(unix)]
     cmd.arg("--password-file").arg("/dev/stdin");
     cmd.args(args);
     // An explicit password file wins over these in restic, but removing them
@@ -427,15 +433,22 @@ mod tests {
         };
         let command = command(&profile, &["snapshots", "--json"]).unwrap();
         let args: Vec<_> = command.get_args().collect();
-        assert_eq!(
-            args,
-            [
-                "--no-cache",
-                "--password-file",
-                "/dev/stdin",
-                "snapshots",
-                "--json"
-            ]
+        #[cfg(unix)]
+        let expected: &[&str] = &[
+            "--no-cache",
+            "--password-file",
+            "/dev/stdin",
+            "snapshots",
+            "--json",
+        ];
+        // No `--password-file` on Windows: the password rides restic's
+        // non-terminal stdin fallback instead. See `command`.
+        #[cfg(windows)]
+        let expected: &[&str] = &["--no-cache", "snapshots", "--json"];
+        assert_eq!(args, expected);
+        assert!(
+            !args.iter().any(|a| a.to_string_lossy().contains("pw")),
+            "the password must never reach argv: {args:?}"
         );
     }
 

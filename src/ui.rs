@@ -161,7 +161,11 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
             &profile_title("Local repository path", app),
             &app.local_path,
             false,
-            "Filesystem path, e.g. /tmp/resterm-test-repo",
+            if cfg!(windows) {
+                "Filesystem path, e.g. C:\\restic\\my-repo"
+            } else {
+                "Filesystem path, e.g. /tmp/resterm-test-repo"
+            },
         ),
         Screen::RestConfig => render_rest_config(frame, app, area),
         Screen::S3Location => render_s3_location(frame, app, area),

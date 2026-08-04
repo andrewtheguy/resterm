@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Pinned so a restic release can't turn CI red on its own schedule. Must stay
+  # >= the MIN_* version enforced in src/restic.rs.
+  RESTIC_VERSION: 0.19.1
+
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            label: linux-amd64
+            # No `keychain` on Linux CI: the D-Bus secret-service store needs
+            # libdbus at build time and a keyring daemon at runtime, neither of
+            # which a headless runner has. See docs/keychain.md.
+            features: ""
+          - runner: macos-latest
+            label: macos-arm64
+            features: "--all-features"
+          - runner: windows-latest
+            label: windows-amd64
+            features: "--all-features"
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      # Only the #[ignore]d live tests shell out to restic, but installing it
+      # unconditionally keeps the "live" step below a one-liner.
+      - name: Install restic
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          mkdir -p restic-bin
+          base="https://github.com/restic/restic/releases/download/v${RESTIC_VERSION}"
+          case "$RUNNER_OS" in
+            Windows) asset="restic_${RESTIC_VERSION}_windows_amd64.zip" ;;
+            macOS)   asset="restic_${RESTIC_VERSION}_darwin_arm64.bz2" ;;
+            Linux)   asset="restic_${RESTIC_VERSION}_linux_amd64.bz2" ;;
+            *) echo "::error::unsupported runner OS $RUNNER_OS"; exit 1 ;;
+          esac
+          curl -fsSLO "$base/SHA256SUMS"
+          curl -fsSLO "$base/$asset"
+          # SHA256SUMS lines are "<hash>  <asset>"; macOS runners ship `shasum`
+          # rather than GNU `sha256sum`.
+          if command -v sha256sum >/dev/null 2>&1; then
+            grep " ${asset}\$" SHA256SUMS | sha256sum -c -
+          else
+            grep " ${asset}\$" SHA256SUMS | shasum -a 256 -c -
+          fi
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # Git Bash on the Windows runners has no `unzip`; PowerShell does.
+            powershell -NoProfile -Command "Expand-Archive -Path '$asset' -DestinationPath . -Force"
+            mv restic_*_windows_amd64.exe restic-bin/restic.exe
+          else
+            bunzip2 -c "$asset" > restic-bin/restic
+            chmod +x restic-bin/restic
+          fi
+          rm -f "$asset" SHA256SUMS
+          echo "${RUNNER_TEMP}/restic-bin" >> "$GITHUB_PATH"
+
+      - name: restic version
+        shell: bash
+        run: restic version
+
+      - name: Clippy
+        run: cargo clippy ${{ matrix.features }} --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test ${{ matrix.features }}
+
+      # The live tests spawn real restic subprocesses against throwaway
+      # repositories under ./tmp. They are what actually prove the
+      # password-over-stdin channel works on each platform, so CI runs them
+      # rather than leaving them to a developer's machine.
+      - name: Live restic tests
+        shell: bash
+        run: |
+          cargo test ${{ matrix.features }} -- --ignored \
+            live_restic_delete_round_trip \
+            live_restic_metadata_round_trip \
+            e2e_serves_and_validates_signed_url
+
+      # Windows only. `init_store` is otherwise reached solely from main(), so
+      # without this the credential-store path is compiled under --all-features
+      # but never executed: this is what proves Store::new / set_password /
+      # get_password actually talk to Credential Manager. The other runners are
+      # excluded because their stores need an interactive session — an unlocked
+      # login keychain on macOS, a running secret-service daemon on Linux (which
+      # does not even build the feature here).
+      - name: Live keychain test
+        if: runner.os == 'Windows'
+        run: cargo test ${{ matrix.features }} -- --ignored live_keychain_round_trip

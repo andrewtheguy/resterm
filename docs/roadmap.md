@@ -14,9 +14,9 @@
   environment variables or command arguments
 
 All write operations continue to run through restic >= 0.19.1. Repository
-passwords must use the anonymous stdin pipe with
-`--password-file /dev/stdin`; progress and results should use restic's
-structured output wherever available.
+passwords must use the anonymous stdin pipe (`--password-file /dev/stdin` on
+Unix, restic's non-terminal stdin fallback on Windows); progress and results
+should use restic's structured output wherever available.
 
 ## Browsing and platform
 
@@ -29,4 +29,4 @@ structured output wherever available.
   relocated rather than showing them as a delete + add)
 - Search across snapshot contents (find files by name or path pattern)
 - Search text file contents across snapshots (requires indexing and is a much larger project)
-- Windows support (needs build and runtime testing on Windows)
+- Windows on ARM (only `windows-amd64` is built and published today)

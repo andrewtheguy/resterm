@@ -11,7 +11,6 @@ mod restic;
 mod share;
 mod ui;
 
-use std::path::PathBuf;
 use anyhow::Result;
 use ratatui::{
     DefaultTerminal,
@@ -25,6 +24,7 @@ use ratatui::widgets::TableState;
 
 use crate::app::{App, BrowseFrame, Screen};
 use crate::cli::{USAGE, parse_cli};
+use crate::config::{ConfigLock, Paths};
 use crate::repo::{
     ContentRow, diff_snapshots, get_file_details, list_tree, load_snapshots, open_indexed,
     preview_snapshot_contents, snapshot_root_tree, verify_profile,
@@ -58,13 +58,25 @@ fn main() -> Result<()> {
     #[cfg(not(feature = "keychain"))]
     let no_keychain = cli.no_keychain;
 
+    // Take the config-directory lock before entering the alternate screen, so a
+    // "second instance" refusal prints as plain text instead of flashing an
+    // empty TUI first.
+    let paths = config::paths(cli.config_dir)?;
+    let config_lock = match config::acquire_lock(&paths) {
+        Ok(lock) => lock,
+        Err(e) => {
+            eprintln!("{e:#}");
+            std::process::exit(1);
+        }
+    };
+
     let mut terminal = ratatui::init();
     // Enable mouse reporting after entering raw mode. With capture on,
     // terminals route clicks/scroll to us instead of doing native text
     // selection; users can hold Shift to bypass and select text.
     let mouse_enabled = !cli.no_mouse
         && crossterm::execute!(std::io::stdout(), EnableMouseCapture).is_ok();
-    let result = run(&mut terminal, cli.config_dir, cli.port, no_keychain);
+    let result = run(&mut terminal, paths, config_lock, cli.port, no_keychain);
     if mouse_enabled {
         let _ = crossterm::execute!(std::io::stdout(), DisableMouseCapture);
     }
@@ -74,11 +86,12 @@ fn main() -> Result<()> {
 
 fn run(
     terminal: &mut DefaultTerminal,
-    config_dir: Option<PathBuf>,
+    paths: Paths,
+    config_lock: ConfigLock,
     server_port: u16,
     no_keychain: bool,
 ) -> Result<()> {
-    let mut app = App::boot(config_dir, server_port, no_keychain)?;
+    let mut app = App::boot(paths, config_lock, server_port, no_keychain)?;
 
     while !app.quit {
         terminal.draw(|f| render(f, &mut app))?;

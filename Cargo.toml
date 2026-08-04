@@ -1,6 +1,6 @@
 [package]
 name = "resterm"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2024"
 
 [dependencies]
@@ -32,5 +32,13 @@ apple-native-keyring-store = { version = "1", features = ["keychain"], optional 
 [target.'cfg(target_os = "linux")'.dependencies]
 dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust"], optional = true }
 
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = { version = "1", optional = true }
+
 [features]
-keychain = ["dep:keyring-core", "dep:apple-native-keyring-store", "dep:dbus-secret-service-keyring-store"]
+keychain = [
+    "dep:keyring-core",
+    "dep:apple-native-keyring-store",
+    "dep:dbus-secret-service-keyring-store",
+    "dep:windows-native-keyring-store",
+]
