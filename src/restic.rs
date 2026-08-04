@@ -152,13 +152,40 @@ pub(crate) fn snapshot_details_json(
     Ok((one, pretty))
 }
 
+/// List the immediate children of every directory in `dirs`, in one restic
+/// invocation, and return the raw JSONL.
+///
+/// `restic ls` reads positional arguments after the snapshot id as absolute
+/// directory filters, and *without* `--recursive` it does not descend past
+/// them. That is what keeps this cheap: restic decodes only the tree objects
+/// for the named directories, so the cost is one restic startup regardless of
+/// how many directories are passed and — the point of listing this way —
+/// regardless of how large the snapshot is. Listing a snapshot recursively
+/// instead makes restic fetch *every* tree in it, which on a remote backend
+/// with `--no-cache` is a network round trip per directory.
+///
+/// Note that restic also echoes each filter directory's own node, not just its
+/// children; callers must key off the parent path rather than assume every
+/// node is a child.
+///
 /// `snapshot_id` must be the full 64-char hex hash (enforced — short ids are
-/// rejected to avoid prefix ambiguity). Returns the raw JSONL output of
-/// `restic ls --json`, which lists the whole snapshot recursively in one
-/// invocation.
-pub(crate) fn ls_json(profile: &Profile, snapshot_id: &str) -> Result<Vec<u8>> {
+/// rejected to avoid prefix ambiguity).
+pub(crate) fn ls_children_json(
+    profile: &Profile,
+    snapshot_id: &str,
+    dirs: &[String],
+) -> Result<Vec<u8>> {
     ensure_full_snapshot_id(snapshot_id)?;
-    run(profile, &["ls", "--json", snapshot_id])
+    // restic rejects relative filters outright; catch it here so the failure
+    // names the offending path instead of surfacing as a restic exit status.
+    if let Some(bad) = dirs.iter().find(|dir| !dir.starts_with('/')) {
+        return Err(anyhow!(
+            "restic ls path filters must be absolute, got `{bad}`"
+        ));
+    }
+    let mut args: Vec<&str> = vec!["ls", "--json", snapshot_id];
+    args.extend(dirs.iter().map(String::as_str));
+    run(profile, &args)
 }
 
 /// `snapshot_id` must be the full 64-char hex hash (enforced — short ids are

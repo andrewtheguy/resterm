@@ -296,72 +296,199 @@ struct LsNode {
     size: u64,
 }
 
+/// The path restic uses for a snapshot's root when filtering `ls`.
+const PREVIEW_ROOT: &str = "/";
+
+/// Directories expanded per level. One level is one restic invocation whose
+/// argv carries every directory in it, so this also keeps the command line far
+/// below the ~32 KB Windows limit even for long paths.
+const PREVIEW_MAX_DIRS_PER_LEVEL: usize = 64;
+
+/// Entries taken from one directory before the walk moves on to its siblings.
+const PREVIEW_ENTRIES_PER_DIR: usize = 10;
+
+/// Ceiling on restic invocations for one preview, and so on how long it can
+/// take. What normally stops the walk is the entry budget, not this: a level
+/// that yields plenty of entries fills `limit` within two or three calls. The
+/// cap only bites on a snapshot whose top is a long chain of near-empty
+/// directories — which happens whenever the backup source was a deeply nested
+/// path, since restic's tree mirrors it, e.g. `/home/andrew/projects/thing`.
+/// Such levels cost one entry each, so the base has to clear a realistic path
+/// depth; the `limit / 50` term then hands each press of "load more" another
+/// level, so paginating past the cap still reveals something new.
+fn preview_max_levels(limit: usize) -> usize {
+    8 + limit / 50
+}
+
+/// Walk the top of a snapshot breadth-first, one restic invocation per level,
+/// stopping as soon as `limit` entries are collected.
+///
+/// Cost is bounded by the number of levels walked, *not* by the size of the
+/// snapshot — a 50-entry preview of a million-file backup costs the same one
+/// or two restic calls as a preview of a tiny one.
+///
+/// `snapshot_paths` is the snapshot's own `paths` field, used to start the walk
+/// at the directories that were backed up. See [`preview_roots`].
 pub(crate) fn preview_snapshot_contents(
     repo: &RepoSession,
     snapshot_id: &str,
+    snapshot_paths: &[String],
     limit: usize,
 ) -> Result<ContentsPreview> {
-    let output = restic::ls_json(&repo.profile, snapshot_id)?;
-    let text = String::from_utf8(output).context("restic ls output was not UTF-8")?;
-    parse_ls_preview(&text, limit)
+    let mut fetch = |dirs: &[String]| {
+        let output = restic::ls_children_json(&repo.profile, snapshot_id, dirs)?;
+        let text = String::from_utf8(output).context("restic ls output was not UTF-8")?;
+        parse_ls_children(&text, dirs)
+    };
+    let roots = preview_roots(snapshot_paths);
+    let preview = build_preview(&roots, limit, &mut fetch)?;
+    // A snapshot taken from a *relative* path records absolutised `paths` that
+    // its tree does not mirror (restic stores `/deep/src` for `backup
+    // deep/src`), so the seeded roots match nothing. Falling back to the tree
+    // root costs one extra call in that case and keeps the preview correct.
+    if preview.entries.is_empty() && roots != [PREVIEW_ROOT] {
+        return build_preview(&[PREVIEW_ROOT.to_string()], limit, &mut fetch);
+    }
+    Ok(preview)
 }
 
-fn parse_ls_preview(text: &str, limit: usize) -> Result<ContentsPreview> {
-    let mut children: HashMap<String, Vec<LsNode>> = HashMap::new();
+/// Where to start the walk.
+///
+/// A snapshot's tree mirrors the path that was backed up, so a backup of
+/// `/home/andrew/projects` buries everything interesting under a chain of
+/// single-child directories — `/`, then `/home`, then `/home/andrew` — each of
+/// which would cost a restic invocation to step through and tells the reader
+/// nothing. Starting at the snapshot's own paths skips the chain entirely and
+/// spends the first call on actual content.
+///
+/// Only absolute paths are usable as `restic ls` filters; anything else (a
+/// Windows `C:\…` path, say) falls back to the tree root.
+fn preview_roots(snapshot_paths: &[String]) -> Vec<String> {
+    let roots: Vec<String> = snapshot_paths
+        .iter()
+        .filter(|path| path.starts_with('/'))
+        .map(|path| path.trim_end_matches('/').to_string())
+        .filter(|path| !path.is_empty())
+        .take(PREVIEW_MAX_DIRS_PER_LEVEL)
+        .collect();
+    if roots.is_empty() {
+        vec![PREVIEW_ROOT.to_string()]
+    } else {
+        roots
+    }
+}
+
+/// The level-walking half of the preview, separated from restic so the
+/// traversal, the entry budget and the `truncated` flag can be tested against
+/// a synthetic tree.
+///
+/// `fetch` is handed one level's directories and returns, per directory and in
+/// the same order, that directory's immediate children.
+fn build_preview(
+    roots: &[String],
+    limit: usize,
+    mut fetch: impl FnMut(&[String]) -> Result<Vec<(String, Vec<LsNode>)>>,
+) -> Result<ContentsPreview> {
+    let mut entries: Vec<PreviewEntry> = Vec::new();
+    let mut level = roots.to_vec();
+    let mut truncated = false;
+
+    for _ in 0..preview_max_levels(limit) {
+        if level.is_empty() || entries.len() >= limit {
+            break;
+        }
+        let mut next = Vec::new();
+        let mut leftovers = Vec::new();
+        // First pass: a fixed slice of each directory before any directory gets
+        // a second helping, so a crowded `/etc` cannot fill the whole preview
+        // and leave `/home` and `/root` invisible. The cap is deliberately not
+        // derived from `limit`: that keeps the ordering identical as the limit
+        // grows, so "load more" extends the list instead of reshuffling it.
+        for (_, children) in fetch(&level)? {
+            let mut children = children.into_iter();
+            for node in children.by_ref().take(PREVIEW_ENTRIES_PER_DIR) {
+                if entries.len() >= limit {
+                    truncated = true;
+                    break;
+                }
+                push_entry(&mut entries, &mut next, node);
+            }
+            leftovers.extend(children);
+        }
+        // Second pass: spend whatever budget is left going deeper into the same
+        // directories, in the order they were listed.
+        for node in leftovers {
+            if entries.len() >= limit {
+                truncated = true;
+                break;
+            }
+            push_entry(&mut entries, &mut next, node);
+        }
+        level = next;
+    }
+    // Directories still queued means there is more to show at a greater depth,
+    // which a larger limit will reach.
+    Ok(ContentsPreview {
+        truncated: truncated || !level.is_empty(),
+        entries,
+    })
+}
+
+fn push_entry(entries: &mut Vec<PreviewEntry>, next: &mut Vec<String>, node: LsNode) {
+    if node.kind == "dir" && next.len() < PREVIEW_MAX_DIRS_PER_LEVEL {
+        next.push(node.path.clone());
+    }
+    entries.push(PreviewEntry {
+        kind: node_kind(&node.kind),
+        path: node.path,
+        size: node.size,
+    });
+}
+
+/// Group one `restic ls` level into `(directory, children)` pairs, ordered to
+/// match `dirs`. Nodes that are not a direct child of a requested directory —
+/// notably the filter directories' own nodes, which restic echoes back — are
+/// dropped.
+fn parse_ls_children(text: &str, dirs: &[String]) -> Result<Vec<(String, Vec<LsNode>)>> {
+    let mut children: HashMap<&str, Vec<LsNode>> = HashMap::new();
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
         let value: serde_json::Value =
             serde_json::from_str(line).context("parsing restic ls JSON line")?;
         if value.get("message_type").and_then(|kind| kind.as_str()) != Some("node") {
             continue;
         }
-        let node: LsNode =
-            serde_json::from_value(value).context("parsing restic ls node")?;
-        let parent = node
-            .path
-            .rsplit_once('/')
-            .map(|(parent, _)| parent.to_string())
+        let node: LsNode = serde_json::from_value(value).context("parsing restic ls node")?;
+        let parent = parent_path(&node.path)
             .ok_or_else(|| anyhow!("restic ls node path `{}` has no parent", node.path))?;
-        children.entry(parent).or_default().push(node);
+        if let Some(dir) = dirs.iter().find(|dir| *dir == &parent) {
+            children.entry(dir.as_str()).or_default().push(node);
+        }
     }
-    for nodes in children.values_mut() {
-        // Paths within one directory share their parent prefix, so comparing
-        // paths orders siblings by name — same order list_tree produces.
-        nodes.sort_by(|a, b| {
-            let ad = a.kind == "dir";
-            let bd = b.kind == "dir";
-            bd.cmp(&ad).then_with(|| a.path.cmp(&b.path))
-        });
-    }
-    let mut entries = Vec::new();
-    let mut truncated = false;
-    walk_preview(&children, "", &mut entries, limit, &mut truncated);
-    Ok(ContentsPreview { entries, truncated })
+    Ok(dirs
+        .iter()
+        .map(|dir| {
+            let mut nodes = children.remove(dir.as_str()).unwrap_or_default();
+            // Siblings share a parent prefix, so ordering by path orders them
+            // by name — the same dirs-first order list_tree produces.
+            nodes.sort_by(|a, b| {
+                let ad = a.kind == "dir";
+                let bd = b.kind == "dir";
+                bd.cmp(&ad).then_with(|| a.path.cmp(&b.path))
+            });
+            (dir.clone(), nodes)
+        })
+        .collect())
 }
 
-fn walk_preview(
-    children: &HashMap<String, Vec<LsNode>>,
-    dir: &str,
-    out: &mut Vec<PreviewEntry>,
-    limit: usize,
-    truncated: &mut bool,
-) {
-    let Some(rows) = children.get(dir) else {
-        return;
-    };
-    for node in rows {
-        if out.len() >= limit {
-            *truncated = true;
-            break;
-        }
-        out.push(PreviewEntry {
-            path: node.path.clone(),
-            kind: node_kind(&node.kind),
-            size: node.size,
-        });
-        if node.kind == "dir" {
-            walk_preview(children, &node.path, out, limit, truncated);
-        }
-    }
+/// The parent of an absolute restic path, with the root spelled `/` rather
+/// than the empty string so it can be compared against a filter directory.
+fn parent_path(path: &str) -> Option<String> {
+    let (head, _) = path.rsplit_once('/')?;
+    Some(if head.is_empty() {
+        PREVIEW_ROOT.to_string()
+    } else {
+        head.to_string()
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -470,31 +597,260 @@ pub(crate) fn diff_snapshots(
 mod tests {
     use super::*;
 
+    // One level of real `restic ls --json <snap> /zdir` output: a snapshot
+    // header, the filter directory's own node echoed back, its children, and a
+    // grandchild that a `--recursive` run would have emitted.
     const LS_FIXTURE: &str = r#"
 {"message_type":"snapshot","id":"abc","short_id":"abc"}
-{"message_type":"node","name":"a.txt","type":"file","path":"/a.txt","size":3}
 {"message_type":"node","name":"zdir","type":"dir","path":"/zdir"}
 {"message_type":"node","name":"inner.txt","type":"file","path":"/zdir/inner.txt","size":7}
 {"message_type":"node","name":"link","type":"symlink","path":"/zdir/link"}
+{"message_type":"node","name":"sub","type":"dir","path":"/zdir/sub"}
+{"message_type":"node","name":"deep.txt","type":"file","path":"/zdir/sub/deep.txt","size":1}
 "#;
 
     #[test]
-    fn ls_preview_orders_dirs_first_and_recurses() {
-        let preview = parse_ls_preview(LS_FIXTURE, 10).expect("parse");
-        let paths: Vec<&str> = preview.entries.iter().map(|e| e.path.as_str()).collect();
-        assert_eq!(paths, ["/zdir", "/zdir/inner.txt", "/zdir/link", "/a.txt"]);
-        assert!(!preview.truncated);
-        assert!(matches!(preview.entries[0].kind, ContentKind::Dir));
-        assert_eq!(preview.entries[1].size, 7);
-        assert!(matches!(preview.entries[2].kind, ContentKind::Symlink));
+    fn ls_children_keeps_only_direct_children_dirs_first() {
+        let dirs = vec!["/zdir".to_string()];
+        let levels = parse_ls_children(LS_FIXTURE, &dirs).expect("parse");
+        assert_eq!(levels.len(), 1);
+        let (dir, nodes) = &levels[0];
+        assert_eq!(dir, "/zdir");
+        let paths: Vec<&str> = nodes.iter().map(|n| n.path.as_str()).collect();
+        // `/zdir` itself and the grandchild `/zdir/sub/deep.txt` are dropped;
+        // the subdirectory sorts ahead of the file and the symlink.
+        assert_eq!(paths, ["/zdir/sub", "/zdir/inner.txt", "/zdir/link"]);
+        assert_eq!(nodes[1].size, 7);
     }
 
     #[test]
-    fn ls_preview_truncates_at_limit() {
-        let preview = parse_ls_preview(LS_FIXTURE, 2).expect("parse");
+    fn ls_children_returns_requested_directories_in_order() {
+        let text = r#"
+{"message_type":"node","name":"b.txt","type":"file","path":"/b/b.txt"}
+{"message_type":"node","name":"a.txt","type":"file","path":"/a/a.txt"}
+"#;
+        let dirs = vec!["/a".to_string(), "/b".to_string(), "/empty".to_string()];
+        let levels = parse_ls_children(text, &dirs).expect("parse");
+        let order: Vec<&str> = levels.iter().map(|(dir, _)| dir.as_str()).collect();
+        assert_eq!(order, ["/a", "/b", "/empty"]);
+        assert!(levels[2].1.is_empty());
+    }
+
+    // A synthetic snapshot shaped like the ones this preview is slow on: a few
+    // top-level directories over a large, deep tree.
+    fn fake_children(dir: &str) -> Vec<LsNode> {
+        let node = |path: String, kind: &str| LsNode {
+            kind: kind.to_string(),
+            path,
+            size: 0,
+        };
+        match dir {
+            "/" => vec![
+                node("/etc".into(), "dir"),
+                node("/home".into(), "dir"),
+                node("/root".into(), "dir"),
+            ],
+            "/etc" | "/home" | "/root" => (0..30)
+                .map(|i| node(format!("{dir}/sub{i:02}"), "dir"))
+                .collect(),
+            // Every deeper directory holds 30 files and one subdirectory, so
+            // the tree is effectively unbounded below this point.
+            _ => (0..30)
+                .map(|i| node(format!("{dir}/file{i:02}"), "file"))
+                .chain(std::iter::once(node(format!("{dir}/nested"), "dir")))
+                .collect(),
+        }
+    }
+
+    fn fake_preview(limit: usize, calls: &mut Vec<Vec<String>>) -> ContentsPreview {
+        build_preview(&[PREVIEW_ROOT.to_string()], limit, |dirs| {
+            calls.push(dirs.to_vec());
+            Ok(dirs
+                .iter()
+                .map(|dir| (dir.clone(), fake_children(dir)))
+                .collect())
+        })
+        .expect("preview")
+    }
+
+    #[test]
+    fn preview_roots_start_at_the_backed_up_paths() {
+        let paths = vec!["/etc".to_string(), "/home/andrew/".to_string()];
+        assert_eq!(preview_roots(&paths), ["/etc", "/home/andrew"]);
+    }
+
+    #[test]
+    fn preview_roots_fall_back_to_the_tree_root() {
+        // Windows snapshots record `C:\…`, which is not a usable `ls` filter.
+        let paths = vec![r"C:\Users\andrew\projects".to_string()];
+        assert_eq!(preview_roots(&paths), ["/"]);
+        assert_eq!(preview_roots(&[]), ["/"]);
+    }
+
+    #[test]
+    fn preview_walks_breadth_first_from_the_root() {
+        let mut calls = Vec::new();
+        let preview = fake_preview(8, &mut calls);
         let paths: Vec<&str> = preview.entries.iter().map(|e| e.path.as_str()).collect();
-        assert_eq!(paths, ["/zdir", "/zdir/inner.txt"]);
+        // The top-level directories all appear before anything nested — the
+        // whole point of the preview, since they are what identifies the
+        // snapshot. A depth-first walk would have spent all 8 entries inside
+        // /etc and never shown /home or /root.
+        assert_eq!(
+            paths,
+            [
+                "/etc",
+                "/home",
+                "/root",
+                "/etc/sub00",
+                "/etc/sub01",
+                "/etc/sub02",
+                "/etc/sub03",
+                "/etc/sub04",
+            ]
+        );
         assert!(preview.truncated);
+        assert_eq!(calls, vec![vec!["/".to_string()], vec!["/etc".to_string(), "/home".to_string(), "/root".to_string()]]);
+    }
+
+    // The regression guard for the reason this was rewritten: previewing a
+    // snapshot must not cost restic work proportional to the snapshot's size.
+    #[test]
+    fn preview_costs_one_restic_call_per_level() {
+        let mut calls = Vec::new();
+        let preview = fake_preview(50, &mut calls);
+        assert_eq!(preview.entries.len(), 50);
+        // Two restic calls cover a 50-entry preview of an unbounded tree: the
+        // root, then its three children, whose 90 entries overrun the budget.
+        assert_eq!(calls.len(), 2);
+        // Never more directories in one call than the per-level cap, so argv
+        // stays well inside the Windows command-line limit.
+        assert!(calls.iter().all(|dirs| dirs.len() <= PREVIEW_MAX_DIRS_PER_LEVEL));
+    }
+
+    // A snapshot of `/etc,/home,/root` must show something from each, or the
+    // preview cannot answer the question it exists to answer.
+    #[test]
+    fn preview_shows_every_backup_root_not_just_the_first() {
+        let mut calls = Vec::new();
+        let preview = fake_preview(50, &mut calls);
+        for root in ["/etc/", "/home/", "/root/"] {
+            assert!(
+                preview.entries.iter().any(|e| e.path.starts_with(root)),
+                "no entry under {root}: {:?}",
+                preview.entries.iter().map(|e| &e.path).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn preview_stops_at_the_entry_budget_and_reports_more() {
+        let mut calls = Vec::new();
+        let preview = fake_preview(2, &mut calls);
+        assert_eq!(preview.entries.len(), 2);
+        assert!(preview.truncated);
+    }
+
+    #[test]
+    fn raising_the_limit_reveals_more_entries() {
+        // "load more" adds both entries and a level, so paginating always makes
+        // progress instead of redrawing the same list.
+        let (mut first, mut second) = (Vec::new(), Vec::new());
+        let small = fake_preview(50, &mut first);
+        let large = fake_preview(100, &mut second);
+        assert!(large.entries.len() > small.entries.len());
+        assert!(second.len() > first.len());
+        let small_paths: Vec<&str> = small.entries.iter().map(|e| e.path.as_str()).collect();
+        let large_paths: Vec<&str> = large.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(large_paths[..small_paths.len()], small_paths[..]);
+    }
+
+    // restic's tree mirrors the path that was backed up, so a snapshot of
+    // `/home/andrew/projects/thing` opens with a chain of single-child
+    // directories before any content appears. The walk has to spend levels on
+    // that chain and still reach the files.
+    #[test]
+    fn preview_reaches_content_below_a_deep_single_child_chain() {
+        const CHAIN: [&str; 5] = [
+            "/tmp",
+            "/tmp/work",
+            "/tmp/work/src",
+            "/tmp/work/src/app",
+            "/tmp/work/src/app/nested",
+        ];
+        let chain_fetch = |dirs: &[String]| {
+            Ok(dirs
+                .iter()
+                .map(|dir| {
+                    let nodes = match CHAIN.iter().position(|link| link == dir) {
+                        Some(i) if i + 1 < CHAIN.len() => vec![LsNode {
+                            kind: "dir".into(),
+                            path: CHAIN[i + 1].into(),
+                            size: 0,
+                        }],
+                        Some(_) => vec![LsNode {
+                            kind: "file".into(),
+                            path: format!("{dir}/a.txt"),
+                            size: 7,
+                        }],
+                        None if dir == PREVIEW_ROOT => vec![LsNode {
+                            kind: "dir".into(),
+                            path: CHAIN[0].into(),
+                            size: 0,
+                        }],
+                        None => Vec::new(),
+                    };
+                    (dir.clone(), nodes)
+                })
+                .collect())
+        };
+
+        let mut calls = 0;
+        let from_root = build_preview(&[PREVIEW_ROOT.to_string()], 50, |dirs| {
+            calls += 1;
+            chain_fetch(dirs)
+        })
+        .expect("preview");
+        let paths: Vec<&str> = from_root.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths.last(), Some(&"/tmp/work/src/app/nested/a.txt"));
+        assert!(!from_root.truncated);
+        assert_eq!(calls, 6, "one call per link in the chain, plus the content");
+
+        // Seeding at the snapshot's own path skips the whole chain, which is
+        // the difference between six restic invocations and one.
+        let mut seeded_calls = 0;
+        let seeded = build_preview(&[CHAIN[4].to_string()], 50, |dirs| {
+            seeded_calls += 1;
+            chain_fetch(dirs)
+        })
+        .expect("preview");
+        assert_eq!(seeded_calls, 1);
+        let seeded_paths: Vec<&str> = seeded.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(seeded_paths, ["/tmp/work/src/app/nested/a.txt"]);
+    }
+
+    #[test]
+    fn preview_is_not_truncated_when_the_snapshot_fits() {
+        let preview = build_preview(&[PREVIEW_ROOT.to_string()], 50, |dirs| {
+            Ok(dirs
+                .iter()
+                .map(|dir| {
+                    let nodes = if dir == PREVIEW_ROOT {
+                        vec![LsNode {
+                            kind: "file".into(),
+                            path: "/only.txt".into(),
+                            size: 3,
+                        }]
+                    } else {
+                        Vec::new()
+                    };
+                    (dir.clone(), nodes)
+                })
+                .collect())
+        })
+        .expect("preview");
+        assert_eq!(preview.entries.len(), 1);
+        assert!(!preview.truncated);
     }
 
     #[test]
@@ -529,7 +885,8 @@ mod tests {
         assert!(!root_rows.is_empty());
 
         let preview =
-            preview_snapshot_contents(&session, &snapshots[0].id, 50).expect("preview");
+            preview_snapshot_contents(&session, &snapshots[0].id, &snapshots[0].paths, 50)
+                .expect("preview");
         assert!(preview.entries.iter().any(|entry| entry.path.ends_with("/a.txt")));
         assert!(preview.entries.iter().any(|entry| entry.path.ends_with("/b.txt")));
 
@@ -569,8 +926,8 @@ mod tests {
         assert!(changes.iter().any(|change| change.path.ends_with("/hello.txt")));
         assert!(changes.iter().any(|change| change.path.ends_with("/second.txt")));
 
-        let preview =
-            preview_snapshot_contents(&session, &snapshot.id, 100).expect("preview Garage tree");
+        let preview = preview_snapshot_contents(&session, &snapshot.id, &snapshot.paths, 100)
+            .expect("preview Garage tree");
         let hello = preview
             .entries
             .iter()

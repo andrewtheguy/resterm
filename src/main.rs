@@ -179,6 +179,12 @@ fn run(
             let limit = app.delete_preview_limit;
             let need_details = app.delete_info.is_none();
             let cached_preview = app.preview_cache.get(&(snap_id.clone(), limit)).cloned();
+            // Carried over when the details are already loaded — a repeat pass
+            // (paginating the preview) must still know where to start the walk.
+            let cached_paths = app
+                .delete_details_parsed
+                .as_ref()
+                .map(|parsed| parsed.paths.clone());
             let result = (|| -> anyhow::Result<_> {
                 let repo = open_indexed(profile)?;
                 let restic_details = if need_details {
@@ -195,7 +201,14 @@ fn run(
                 });
                 let preview = match cached_preview {
                     Some(preview) => preview,
-                    None => preview_snapshot_contents(&repo, &snap_id, limit)?,
+                    None => {
+                        let snapshot_paths = restic_details
+                            .as_ref()
+                            .map(|(parsed, _)| parsed.paths.clone())
+                            .or(cached_paths)
+                            .unwrap_or_default();
+                        preview_snapshot_contents(&repo, &snap_id, &snapshot_paths, limit)?
+                    }
                 };
                 Ok((info, restic_details, preview))
             })();

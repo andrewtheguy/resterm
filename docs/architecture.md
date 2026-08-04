@@ -173,7 +173,18 @@ synchronously on `Screen::PassphraseDerivingKey`.
   hashes, ownership, link targets, and timestamps.
 - A per-browse `RepoSession` maps tree IDs to restic snapshot-path selectors.
 - `diff --json` supplies JSONL changes and statistics.
-- Snapshot previews walk tree objects on demand.
+- The snapshot-delete preview walks the top of a snapshot breadth-first with
+  `ls --json <snapshot> <dir…>`. Positional arguments are directory filters and
+  `--recursive` is not passed, so restic decodes only the named directories:
+  one invocation per level, and a cost that does not grow with the size of the
+  snapshot. The walk starts at the snapshot's own `paths` where those are
+  absolute — a backup of `/home/andrew/projects` otherwise spends an
+  invocation per ancestor directory before reaching anything worth showing —
+  and falls back to the tree root when they are not usable as filters, which
+  is the case for Windows `C:\…` paths and for backups taken from a relative
+  path. Listing a snapshot recursively instead would make restic fetch every
+  tree in it, which is a network round trip per directory on a remote backend
+  running with `--no-cache`.
 
 The share server invokes `restic dump <snapshot> <path>` for each accepted
 download and forwards stdout through a bounded channel to Hyper.
