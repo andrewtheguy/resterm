@@ -14,8 +14,10 @@ deletion; additional write workflows are tracked in
 
 - **Backends**: local filesystem, REST-server, and S3
 - **Profile management**: create, edit, and delete saved profiles; secrets
-  (repository password, S3 keys) are encrypted per-value with AES-256-GCM
-  under a passphrase-derived key
+  (repository password, S3 secret key, REST password) are encrypted per-value
+  with AES-256-GCM under a passphrase-derived key. Identifiers such as the S3
+  access key ID and REST username stay readable — see
+  [`docs/encryption.md`](docs/encryption.md)
 - **Snapshot browsing**: list snapshots, navigate the file tree, view file
   details, and compare two snapshots side-by-side
 - **Snapshot filtering**: narrow by host, tag, or path
@@ -320,7 +322,7 @@ Caveats:
   virtual-hosted-style addressing.
 - Profiles are persisted in `config.toml` inside the config directory
   (`~/.config/resterm` on Linux, `%APPDATA%\resterm` on Windows). Secret fields
-  such as the restic password and S3 keys are encrypted per value with
-  AES-256-GCM under a passphrase-derived key. The file itself is not a
-  whole-file encrypted archive; see `docs/encryption.md` for the on-disk schema
-  and threat model.
+  such as the restic password and the S3 secret key are encrypted per value with
+  AES-256-GCM under a passphrase-derived key; identifiers like the S3 access key
+  ID stay in plaintext. The file itself is not a whole-file encrypted archive;
+  see `docs/encryption.md` for the on-disk schema and threat model.

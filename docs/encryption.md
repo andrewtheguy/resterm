@@ -35,8 +35,16 @@ Which fields are encrypted, per backend (`src/config.rs`):
 | Backend | Encrypted | Plaintext |
 |---|---|---|
 | `Local` | `password` | `local_path` |
-| `Rest` | `password`, `rest_user`, `rest_password` | `rest_url` |
-| `S3` | `password`, `s3_access_key`, `s3_secret_key` | `s3_endpoint`, `s3_bucket`, `s3_region`, `s3_root` |
+| `Rest` | `password`, `rest_password` | `rest_url`, `rest_user` |
+| `S3` | `password`, `s3_secret_key` | `s3_endpoint`, `s3_bucket`, `s3_region`, `s3_root`, `s3_access_key` |
+
+The line is drawn at *credentials*, not at "anything auth-adjacent".
+`rest_user` and `s3_access_key` are identifiers, not secrets: an S3 access
+key ID travels in plaintext in every signed request header and shows up in
+server logs, and a username is a username. Encrypting them would buy no
+confidentiality while making it impossible to see at a glance which
+account a profile uses. Their secret halves — `rest_password` and
+`s3_secret_key` — are what actually gets encrypted.
 
 Empty strings short-circuit: `encrypt_field` returns early on `""` so an
 unset `rest_user` stays as `rest_user = ""` in the TOML rather than being
@@ -134,13 +142,15 @@ The TOML file always exposes, in plaintext:
 - The backend type per profile (`backend = "s3" | "rest" | "local"`).
 - All public backend fields: `local_path`, `rest_url`, `s3_endpoint`,
   `s3_bucket`, `s3_region`, `s3_root`.
+- The account identifiers `rest_user` and `s3_access_key` — see the table
+  above for why these are deliberately not encrypted.
 - Schema metadata: `version`, `cipher` marker.
 - The `[passphrase]` block (`instance`, `instance_sig`,
   `salt`). The instance is a user-chosen label; the signature and salt are
   useless without the passphrase.
 
-Everything else (repo passwords, REST user/password, S3 access/secret
-keys) sits behind `$WR;1.0;AES-256-GCM;` and is unreadable without the passphrase.
+Everything else (repo passwords, `rest_password`, `s3_secret_key`) sits
+behind `$WR;1.0;AES-256-GCM;` and is unreadable without the passphrase.
 
 The key is never on disk; the `[passphrase]` block is metadata, not
 material. An attacker with only `config.toml` would need to brute-force
@@ -155,6 +165,10 @@ tells an attacker:
 - Which storage backends you use and where (S3 buckets, REST endpoints,
   local paths). That's a target list — they know where to look if they
   later obtain credentials.
+- *Which account* those credentials would belong to, via `s3_access_key`
+  and `rest_user`. Neither is a secret, but pairing an access key ID with
+  its bucket and endpoint narrows the target further than the bucket name
+  alone.
 - Your profile count and naming conventions.
 
 If that metadata is itself sensitive, treat `config.toml` like any

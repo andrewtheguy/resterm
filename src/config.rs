@@ -318,6 +318,14 @@ fn decrypt_field(value: &mut String, cipher: &Cipher) -> Result<()> {
     Ok(())
 }
 
+// Encrypt credentials only. `rest_user` and `s3_access_key` are deliberately
+// left in plaintext: they are account identifiers, not secrets. An S3 access
+// key ID is sent unencrypted in every signed request header and lands in server
+// logs, so hiding it here would add no confidentiality while making it
+// impossible to tell which account a profile uses by reading the file. Their
+// secret halves (`rest_password`, `s3_secret_key`) are encrypted.
+//
+// Keep `docs/encryption.md`'s field table in sync with this function.
 fn encrypt_profile_fields(profile: &mut Profile, cipher: &Cipher) -> Result<()> {
     match profile {
         Profile::Local { password, .. } => {
