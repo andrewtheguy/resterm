@@ -59,12 +59,27 @@ jobs:
     strategy:
       matrix:
         include:
+          # Linux ships without `keychain`: the D-Bus secret-service store needs
+          # libdbus at build time and a running keyring daemon at runtime, which
+          # a headless host has neither of. See docs/keychain.md.
           - runner: ubuntu-latest
             label: linux-amd64
+            features: ""
+            ext: ""
           - runner: ubuntu-24.04-arm
             label: linux-arm64
+            features: ""
+            ext: ""
           - runner: macos-latest
             label: macos-arm64
+            features: "--features keychain"
+            ext: ""
+          # Windows Credential Manager is part of the OS — no build or runtime
+          # dependency to install, so `keychain` ships enabled.
+          - runner: windows-latest
+            label: windows-amd64
+            features: "--features keychain"
+            ext: ".exe"
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -73,16 +88,19 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build
-        run: cargo build --release ${{ runner.os == 'macOS' && '--features keychain' || '' }}
+        run: cargo build --release ${{ matrix.features }}
 
+      # bash is present on the Windows runners too, so one rename works
+      # everywhere instead of a pwsh variant.
       - name: Rename binary
-        run: mv target/release/resterm target/release/resterm-${{ matrix.label }}
+        shell: bash
+        run: mv target/release/resterm${{ matrix.ext }} target/release/resterm-${{ matrix.label }}${{ matrix.ext }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: resterm-${{ matrix.label }}
-          path: target/release/resterm-${{ matrix.label }}
+          path: target/release/resterm-${{ matrix.label }}${{ matrix.ext }}
           if-no-files-found: error
 
   create-release:

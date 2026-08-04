@@ -25,12 +25,15 @@ deletion; additional write workflows are tracked in
 - **Keyboard and mouse navigation**: Vim-style keys, arrow keys, PgUp/PgDn,
   mouse click/scroll; `--no-mouse` to disable
 - **Passphrase entry**: masked TUI input, with optional keychain auto-unlock
-- **Keychain integration** (macOS): optionally save the passphrase to the OS
-  keychain for auto-unlock; see [`docs/keychain.md`](docs/keychain.md)
+- **Keychain integration** (macOS, Windows, Linux desktop): optionally save the
+  passphrase to the OS credential store for auto-unlock; see
+  [`docs/keychain.md`](docs/keychain.md)
 
 See [`docs/roadmap.md`](docs/roadmap.md) for planned features.
 
 ## Install (prebuilt binary)
+
+### Linux / macOS
 
 A convenience script downloads the latest release binary from GitHub and
 drops it at `$HOME/.local/bin/resterm` — no `sudo`, no system-wide install.
@@ -53,11 +56,43 @@ binary's `--help` once to confirm it loads on the host. If `$HOME/.local/bin`
 is not on your `$PATH`, the script prints the line you need to add to your
 shell profile.
 
+### Windows
+
+`install.ps1` is the PowerShell equivalent (adapted from the beam-rs
+installer). It installs `resterm.exe` to
+`%LOCALAPPDATA%\Programs\resterm` and adds that directory to the **user**
+PATH — no admin rights, and the script refuses to run elevated unless you pass
+`-Admin`. Target: `windows-amd64`.
+
+```powershell
+irm https://raw.githubusercontent.com/andrewtheguy/resterm/main/install.ps1 | iex
+```
+
+Or clone the repo and run `.\install.ps1` directly. Useful flags:
+
+- `.\install.ps1 v0.0.1` — install a specific release tag
+- `.\install.ps1 -PreRelease` — grab the latest prerelease
+- `.\install.ps1 -DownloadOnly` — drop the binary in the current directory
+- `$env:RELEASE_TAG='v0.0.1'; .\install.ps1` — same as passing the tag
+
+A piped `iex` one-liner cannot take arguments, so set
+`$env:RESTERM_INSTALL_ARGS` instead:
+
+```powershell
+$env:RESTERM_INSTALL_ARGS='-PreRelease'; irm https://raw.githubusercontent.com/andrewtheguy/resterm/main/install.ps1 | iex
+```
+
+Like the shell script it verifies the SHA-256 against the digest GitHub
+publishes in the release metadata, then runs the binary once before installing
+it. It also checks for restic on `PATH` afterwards and points at
+`winget install restic.restic` if it's missing.
+
 ## Build & run
 
-Requires a Rust toolchain (developed against rustc 1.93).
+Requires a Rust toolchain (rustc >= 1.89 for `std::fs::File::try_lock`;
+developed against 1.93).
 
-Platform: Linux / macOS only.
+Platform: Linux, macOS, and Windows.
 
 ```sh
 cargo run
@@ -69,15 +104,23 @@ cargo run
 resterm [-c|--config-dir <PATH>] [-p|--port <N>] [--no-keychain] [-h|--help]
 ```
 
-`--config-dir <PATH>` overrides the default config location
-(`~/.config/resterm`). Useful for keeping separate profile sets, running
-tests, or driving an automation/CI flow against a throwaway directory:
+`--config-dir <PATH>` overrides the default config location —
+`~/.config/resterm` on Linux, `~/Library/Application Support/resterm` on macOS,
+`%APPDATA%\resterm` on Windows. Useful for keeping separate profile sets,
+running tests, or driving an automation/CI flow against a throwaway directory:
 
 ```sh
 cargo run -- --config-dir ./tmp/resterm-sandbox
 ```
 
 The directory is created on first run if it doesn't exist.
+
+Only one resterm can use a config directory at a time. Startup takes an
+exclusive lock on `<config-dir>/config.lock` and holds it until exit; a second
+instance on the same directory exits with an error rather than overwriting the
+first one's profiles when either saves. The lock is released by the OS even if
+the process is killed, so there is nothing to clean up. To run two at once,
+give each its own `--config-dir`.
 
 `--port <N>` selects the localhost port for the file-share dialog
 (default: 7834).
@@ -122,10 +165,12 @@ operations use restic's JSON/JSONL output; downloads stream `restic dump`
 stdout directly to the localhost HTTP response.
 
 The repository password is never placed in an environment variable or command
-argument. Resterm launches restic with `--password-file /dev/stdin`, writes the
-password through the child's anonymous stdin pipe, and closes the pipe before
-reading output. Repository operations also use `--no-cache`, so resterm never
-shares restic's on-disk cache with other CLI instances.
+argument. Resterm writes it through the child's anonymous stdin pipe and closes
+the pipe before reading output. On Unix restic is pointed at that pipe with
+`--password-file /dev/stdin`; Windows has no such path and doesn't need one,
+since restic reads the password directly from stdin whenever stdin is not a
+terminal. Repository operations also use `--no-cache`, so resterm never shares
+restic's on-disk cache with other CLI instances.
 
 All dev/test artifacts in the snippets below go under the project's `./tmp/`
 directory (already in `.gitignore`) rather than the system `/tmp` — this keeps
@@ -273,7 +318,8 @@ Caveats:
   to exist on disk before `restic init`.
 - `--force-path-style=true` is required — rclone's S3 server doesn't speak
   virtual-hosted-style addressing.
-- Profiles are persisted in `~/.config/resterm/config.toml`. Secret fields
+- Profiles are persisted in `config.toml` inside the config directory
+  (`~/.config/resterm` on Linux, `%APPDATA%\resterm` on Windows). Secret fields
   such as the restic password and S3 keys are encrypted per value with
   AES-256-GCM under a passphrase-derived key. The file itself is not a
   whole-file encrypted archive; see `docs/encryption.md` for the on-disk schema

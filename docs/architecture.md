@@ -82,8 +82,20 @@ Keypress handling is concentrated in `App::handle_key` (single big match on
 ## Config + crypto
 
 `src/config.rs` owns the TOML schema (`Config`, `Profile`,
-`PassphraseMeta`) and the atomic save: write `config.toml.tmp` at mode
-0600, then `rename(2)` over the target.
+`PassphraseMeta`) and the atomic save: write `config.toml.tmp` (mode 0600 on
+Unix; on Windows it inherits the per-user ACL of `%APPDATA%`), then rename over
+the target — `rename(2)` on Unix, `MoveFileEx` with `MOVEFILE_REPLACE_EXISTING`
+on Windows.
+
+`config::acquire_lock` takes an exclusive lock on `<config-dir>/config.lock` at
+startup and holds it for the process lifetime, stored on `App` as
+`config_lock`. resterm keeps the whole config in memory and rewrites the file
+wholesale on every save, so a second instance on the same directory would
+silently drop the first one's profiles; it is refused before the TUI starts
+instead. The lock is `std::fs::File::try_lock` (stable since Rust 1.89) —
+`flock(LOCK_EX | LOCK_NB)` on Unix, `LockFileEx` on Windows. No third-party
+crate, and no stale-lock cleanup, because the kernel releases it when the
+process dies for any reason.
 
 Encryption is per-value (not whole-file) so non-secret edits diff cleanly.
 For schema details, key derivation, threat model, and
@@ -133,9 +145,11 @@ synchronously on `Screen::PassphraseDerivingKey`.
   shared cache.
 - `command()` disables restic's shared cache, removes inherited restic
   password variables, and configures the repository/backend.
-- The repository password is written to an anonymous pipe and read by restic
-  through `--password-file /dev/stdin`; it never appears in argv or the
-  environment.
+- The repository password is written to an anonymous pipe on the child's stdin;
+  it never appears in argv or the environment. On Unix restic is pointed at it
+  explicitly with `--password-file /dev/stdin`. Windows has no such path, and
+  needs none: restic reads the password straight off stdin whenever stdin is
+  not a terminal, which is always the case here because `command()` pipes it.
 - `run()` captures structured command output.
 - `stream_dump()` streams file bytes with backpressure and kills the child if
   the HTTP client disconnects.
@@ -164,7 +178,8 @@ Run from `AGENTS.md`:
 - `cargo clippy --all-features` and `cargo test --all-features` after every
   Rust change. Don't run `cargo fmt` — it churns the diff.
 - For local testing, use `cargo run -- --config-dir ./tmp/resterm-sandbox`
-  so the production `~/.config/resterm` is never touched.
+  so the production config dir (`~/.config/resterm`, or `%APPDATA%\resterm`
+  on Windows) is never touched.
 - Test fixtures live under `./tmp/` (gitignored).
 - Live integration fixtures create repositories and sources under `./tmp/`
   and use restic for all repository mutations.

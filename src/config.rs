@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -11,6 +10,7 @@ use crate::crypto::{Cipher, is_passphrase_encrypted};
 
 const CONFIG_DIR_NAME: &str = "resterm";
 const CONFIG_FILE: &str = "config.toml";
+const LOCK_FILE: &str = "config.lock";
 const CONFIG_VERSION: u32 = 2;
 
 pub const CIPHER_MARKER_PASSPHRASE: &str = "passphrase-v1";
@@ -116,9 +116,14 @@ impl Config {
 }
 
 pub struct Paths {
+    pub dir: PathBuf,
     pub config: PathBuf,
+    pub lock: PathBuf,
 }
 
+/// `dirs::config_dir()` is the per-user, per-platform config root:
+/// `~/.config` on Linux, `~/Library/Application Support` on macOS, and
+/// `%APPDATA%` (`C:\Users\<user>\AppData\Roaming`) on Windows.
 pub fn paths(override_dir: Option<PathBuf>) -> Result<Paths> {
     let base = match override_dir {
         Some(p) => p,
@@ -128,7 +133,74 @@ pub fn paths(override_dir: Option<PathBuf>) -> Result<Paths> {
     };
     Ok(Paths {
         config: base.join(CONFIG_FILE),
+        lock: base.join(LOCK_FILE),
+        dir: base,
     })
+}
+
+/// Restrict a file to its owner where the platform can express that. On Unix
+/// this is mode 0600. Windows has no chmod: a newly created file inherits the
+/// ACL of its parent directory, and the config directory lives under the
+/// per-user profile (`%APPDATA%`), which already grants only the owner (plus
+/// SYSTEM/Administrators) access — so there is nothing to tighten there.
+fn owner_only(opts: &mut fs::OpenOptions) -> &mut fs::OpenOptions {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts
+}
+
+/// Exclusive lock over one config directory, held for the lifetime of the
+/// process.
+///
+/// resterm keeps the whole config in memory and rewrites the file wholesale on
+/// every save, so two instances pointed at the same directory would silently
+/// overwrite each other's profiles. The second instance is refused instead.
+///
+/// Backed by [`std::fs::File::try_lock`] (stable since Rust 1.89), which is
+/// `flock(LOCK_EX | LOCK_NB)` on Unix and `LockFileEx` on Windows — no extra
+/// crate, and no stale-PID-file guessing, because the OS releases the lock
+/// when the owning process exits for any reason, including a crash.
+#[derive(Debug)]
+pub struct ConfigLock {
+    file: fs::File,
+}
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        // Closing the handle would release it anyway; being explicit keeps the
+        // release visible at the point the guard dies.
+        let _ = self.file.unlock();
+    }
+}
+
+pub fn acquire_lock(paths: &Paths) -> Result<ConfigLock> {
+    fs::create_dir_all(&paths.dir)
+        .with_context(|| format!("creating {}", paths.dir.display()))?;
+    // `truncate(false)`: the lock file is a zero-byte marker that outlives the
+    // process, and truncating it is not the point — holding it is.
+    let file = owner_only(
+        fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false),
+    )
+    .open(&paths.lock)
+    .with_context(|| format!("opening lock file {}", paths.lock.display()))?;
+    match file.try_lock() {
+        Ok(()) => Ok(ConfigLock { file }),
+        Err(fs::TryLockError::WouldBlock) => bail!(
+            "another resterm instance is already using {} — close it first, \
+             or pass --config-dir to use a different config directory",
+            paths.dir.display()
+        ),
+        Err(fs::TryLockError::Error(e)) => {
+            Err(anyhow!(e)).with_context(|| format!("locking {}", paths.lock.display()))
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -212,17 +284,19 @@ pub fn save(config: &Config, paths: &Paths, cipher: &Cipher) -> Result<()> {
 
     let tmp = paths.config.with_extension("toml.tmp");
     {
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
-            .with_context(|| format!("creating {}", tmp.display()))?;
+        let mut file = owner_only(
+            fs::OpenOptions::new().write(true).create(true).truncate(true),
+        )
+        .open(&tmp)
+        .with_context(|| format!("creating {}", tmp.display()))?;
         file.write_all(text.as_bytes())
             .with_context(|| format!("writing {}", tmp.display()))?;
         file.sync_all().ok();
     }
+    // The temp file's handle is closed above — Windows refuses to rename over a
+    // destination while any handle to the source is open. `fs::rename` replaces
+    // an existing destination on both platforms (`MoveFileEx` with
+    // MOVEFILE_REPLACE_EXISTING on Windows).
     fs::rename(&tmp, &paths.config)
         .with_context(|| format!("renaming {} -> {}", tmp.display(), paths.config.display()))?;
     Ok(())
@@ -307,7 +381,9 @@ mod tests {
 
     fn test_paths(dir: &std::path::Path) -> Paths {
         Paths {
-            config: dir.join("config.toml"),
+            dir: dir.to_path_buf(),
+            config: dir.join(CONFIG_FILE),
+            lock: dir.join(LOCK_FILE),
         }
     }
 
@@ -506,7 +582,55 @@ mod tests {
     fn paths_uses_override_when_provided() -> Result<()> {
         let dir = fresh_dir("override");
         let p = paths(Some(dir.clone()))?;
+        assert_eq!(p.dir, dir);
         assert_eq!(p.config, dir.join("config.toml"));
+        assert_eq!(p.lock, dir.join("config.lock"));
+        fs::remove_dir_all(&dir).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn lock_is_exclusive_and_released_on_drop() -> Result<()> {
+        let dir = fresh_dir("lock");
+        // `acquire_lock` creates the directory itself — remove it first so the
+        // test covers a genuinely fresh config dir.
+        fs::remove_dir_all(&dir).ok();
+        let paths = test_paths(&dir);
+
+        let first = acquire_lock(&paths)?;
+        assert!(paths.lock.exists(), "lock file should be created");
+
+        let err = acquire_lock(&paths).expect_err("second lock must be refused");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("another resterm instance"),
+            "error should name the conflict: {msg}"
+        );
+
+        drop(first);
+        // Same process, but a fresh handle: flock/LockFileEx are per-handle, so
+        // this proves the first guard actually released.
+        let again = acquire_lock(&paths)?;
+        drop(again);
+
+        fs::remove_dir_all(&dir).ok();
+        Ok(())
+    }
+
+    #[test]
+    fn save_and_lock_coexist_in_one_directory() -> Result<()> {
+        let dir = fresh_dir("lock_save");
+        let paths = test_paths(&dir);
+        let cipher = Cipher::new([0x11u8; 32], "test".into(), "testsig0");
+
+        let guard = acquire_lock(&paths)?;
+        save(&Config::default(), &paths, &cipher)?;
+        // Saving twice exercises the rename-over-existing path, which is the
+        // one that differs on Windows.
+        save(&Config::default(), &paths, &cipher)?;
+        assert_eq!(load(&paths, &cipher)?.version, CONFIG_VERSION);
+        drop(guard);
+
         fs::remove_dir_all(&dir).ok();
         Ok(())
     }

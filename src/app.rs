@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -12,7 +11,7 @@ use ratatui::{
 use tui_input::Input;
 use tui_input::backend::crossterm::EventHandler;
 
-use crate::config::{self, BackendKind, Config, PassphraseMeta, Paths, Profile};
+use crate::config::{self, BackendKind, Config, ConfigLock, PassphraseMeta, Paths, Profile};
 use crate::crypto::Cipher;
 use crate::passphrase::{self, PassphrasePhase};
 use crate::repo::{ContentKind, ContentRow, ContentsPreview, DeleteSnapshotInfo, DiffChange, DiffSummary, FileDetails, RepoSession, SnapshotRow};
@@ -226,6 +225,10 @@ pub(crate) struct App {
     pub(crate) screen: Screen,
 
     pub(crate) paths: Paths,
+    /// Held, never read: the exclusive lock on `paths.dir` lives exactly as
+    /// long as the app does, so no second instance can race our saves.
+    #[allow(dead_code)]
+    config_lock: ConfigLock,
     pub(crate) config: Config,
     /// Active cipher backend. `None` only during the boot ceremony — once the
     /// app reaches Home, this is always `Some` (and every `config::save` call
@@ -340,11 +343,11 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 impl App {
     pub(crate) fn boot(
-        config_dir: Option<PathBuf>,
+        paths: Paths,
+        config_lock: ConfigLock,
         server_port: u16,
         no_keychain: bool,
     ) -> Result<Self> {
-        let paths = config::paths(config_dir)?;
         let mut auth_method_list = ListState::default();
         auth_method_list.select(Some(0));
         let mut backend_list = ListState::default();
@@ -353,6 +356,7 @@ impl App {
         let mut app = Self {
             screen: Screen::Home,
             paths,
+            config_lock,
             config: Config::default(),
             cipher: None,
             server_port,
@@ -2297,7 +2301,9 @@ mod tests {
             std::process::id(),
             uniq()
         ));
-        let mut app = App::boot(Some(tmp), 7834, false).expect("boot");
+        let paths = config::paths(Some(tmp)).expect("paths");
+        let lock = config::acquire_lock(&paths).expect("lock fresh test config dir");
+        let mut app = App::boot(paths, lock, 7834, false).expect("boot");
         app.snapshots = snaps;
         app
     }
