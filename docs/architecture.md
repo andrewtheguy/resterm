@@ -72,6 +72,10 @@ struct includes:
   whenever `enter_home()` runs.
 - Snapshot browse state: `snapshots`, `repo_session`, `browse_stack`,
   `pending_descend` / `pending_file_lookup` / `pending_refresh_path`.
+- Two caches keyed on content-derived ids, so neither can go stale:
+  `tree_cache` (directory listings, shared across snapshots) and
+  `preview_cache` (delete-screen previews, dropped when a snapshot is
+  forgotten).
 - Share dialog: `share_target`, `share_handle`, `share_url`, etc.
 - Passphrase dialog: `passphrase_input`, `passphrase_confirm`,
   `passphrase_instance_input`, `passphrase_phase`, `passphrase_error`.
@@ -143,10 +147,16 @@ synchronously on `Screen::PassphraseDerivingKey`.
 `restic.rs` owns subprocess construction and credential transport:
 - `detect()` requires restic >= 0.19, and reads the version from
   `restic version --json` rather than parsing the prose line.
-- Two restic global flags apply throughout. `--no-cache` goes on every
-  invocation, added centrally in `command()` (and in `detect()`), so resterm
-  never shares restic's on-disk cache with other CLI instances. `--json` goes
-  on every invocation that supports it, added by each caller next to its
+- Two restic global flags apply throughout. A cache flag goes on every
+  invocation, added centrally by `apply_cache_flag()` from `command()` (and from
+  `detect()`): `--no-cache` by default, or `--cache-dir` pointed at
+  `dirs::cache_dir()/resterm` when the `--cache` CLI flag set the
+  `CACHE_ENABLED` static at startup. Either spelling keeps resterm from sharing
+  restic's on-disk cache with other CLI instances; the per-user cache root is
+  what keeps two users' caches apart, without a uid in the path and without a
+  `#[cfg(unix)]` branch for a concept Windows lacks. If no cache root can be
+  named, caching stays off rather than falling back to restic's default. `--json`
+  goes on every invocation that supports it, added by each caller next to its
   subcommand; `dump` is the sole exception, since its stdout is the file's raw
   bytes.
 - `command()` also removes inherited restic password variables and configures
@@ -172,8 +182,29 @@ synchronously on `Screen::PassphraseDerivingKey`.
 - `cat snapshot` and `cat tree snapshot:path` preserve tree IDs, content
   hashes, ownership, link targets, and timestamps.
 - A per-browse `RepoSession` maps tree IDs to restic snapshot-path selectors.
+  Those selectors are per-session — a selector names a path in one snapshot —
+  but the parsed trees themselves live in a `TreeCache` held by `App`, which
+  outlives the session. A tree ID is the hash of the tree object's plaintext, so
+  an entry can never go stale and never needs invalidating; and because an
+  incremental backup reuses the tree of every directory that did not change,
+  browsing a second snapshot of the same source mostly reads out of the cache
+  rather than off the backend. `list_tree` re-registers child selectors on a
+  cache hit as well as a miss, since the cached tree may have been read under a
+  different snapshot. The cache is capped at `TREE_CACHE_MAX_TREES`; past that,
+  further trees are simply not stored.
 - `diff --json` supplies JSONL changes and statistics.
-- Snapshot previews walk tree objects on demand.
+- The snapshot-delete preview walks the top of a snapshot breadth-first with
+  `ls --json <snapshot> <dir…>`. Positional arguments are directory filters and
+  `--recursive` is not passed, so restic decodes only the named directories:
+  one invocation per level, and a cost that does not grow with the size of the
+  snapshot. The walk starts at the snapshot's own `paths` where those are
+  absolute — a backup of `/home/andrew/projects` otherwise spends an
+  invocation per ancestor directory before reaching anything worth showing —
+  and falls back to the tree root when they are not usable as filters, which
+  is the case for Windows `C:\…` paths and for backups taken from a relative
+  path. Listing a snapshot recursively instead would make restic fetch every
+  tree in it, which is a network round trip per directory on a remote backend
+  when no cache is kept — the default.
 
 The share server invokes `restic dump <snapshot> <path>` for each accepted
 download and forwards stdout through a bounded channel to Hyper.

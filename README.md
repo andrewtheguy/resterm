@@ -190,11 +190,35 @@ the pipe before reading output. On Unix restic is pointed at that pipe with
 since restic reads the password directly from stdin whenever stdin is not a
 terminal.
 
-Two of restic's global flags are applied throughout. `--no-cache` goes on every
-invocation, so resterm never shares restic's on-disk cache with other CLI
-instances. `--json` goes on every invocation that supports it — including
-`version` and `forget` — so restic's output and messages are structured rather
-than prose. `dump` is the one exception: its stdout is the file's raw bytes.
+Two of restic's global flags are applied throughout. A cache flag goes on every
+invocation: `--no-cache` by default, so nothing is written to disk, or
+`--cache-dir` pointed at resterm's own per-user directory when you pass
+`--cache` (see below). Either way resterm never shares restic's on-disk cache
+with other CLI instances. `--json` goes on every invocation that supports it —
+including `version` and `forget` — so restic's output and messages are
+structured rather than prose. `dump` is the one exception: its stdout is the
+file's raw bytes.
+
+### Caching
+
+Caching is off by default: a restic cache reaches hundreds of megabytes on a
+large repository, and that is not always a trade worth making. Pass `--cache` to
+let restic keep one, in a directory private to resterm and to your user account
+— `$XDG_CACHE_HOME/resterm` if that variable is set and `~/.cache/resterm`
+otherwise (Linux), `~/Library/Caches/resterm` (macOS), `%LOCALAPPDATA%\resterm`
+(Windows). Each of those roots already lives inside the calling user's home or
+profile, so two users on the same machine cannot collide and neither can inherit
+a directory the other created.
+
+To prune it, point restic at the same directory — `restic --cache-dir <that
+path> cache --cleanup`. Plain `restic cache --cleanup` would work on restic's
+own default cache, not resterm's. Note that `--cleanup` only removes caches
+untouched for `--max-age` days (30 by default), so the cache for a repository
+you still browse is left alone; delete the directory to reclaim it outright.
+
+Caching pays off against a remote repository, where it saves refetching the
+index and pack headers. On a small local repository it buys nothing measurable —
+the per-invocation floor there is key derivation, not index I/O.
 
 All dev/test artifacts in the snippets below go under the project's `./tmp/`
 directory (already in `.gitignore`) rather than the system `/tmp` — this keeps

@@ -16,6 +16,20 @@ Options:
                               locked for as long as resterm is running.
   -p, --port <N>              Localhost port for the file-share dialog.
                               Default: 7834.
+      --cache                 Let restic keep its on-disk cache, in a directory
+                              private to resterm and to your user account:
+                              $XDG_CACHE_HOME/resterm if that is set, otherwise
+                              ~/.cache/resterm (Linux); ~/Library/Caches/resterm
+                              (macOS); %LOCALAPPDATA%\\resterm (Windows).
+                              Speeds up repeated work against a remote
+                              repository at the cost of disk space. To prune it,
+                              point restic at the same directory:
+                              'restic --cache-dir <that path> cache --cleanup'.
+                              That drops only caches untouched for --max-age
+                              days (30 by default), so the cache of a repository
+                              you still use stays; delete the directory to
+                              reclaim it outright.
+                              Off by default: every restic call runs --no-cache.
       --no-mouse              Disable mouse reporting (useful for QA / copy-paste).
       --no-keychain           Disable keychain integration even when the binary
                               was built with the 'keychain' feature.
@@ -26,6 +40,7 @@ Options:
 pub(crate) struct Cli {
     pub(crate) config_dir: Option<PathBuf>,
     pub(crate) port: u16,
+    pub(crate) cache: bool,
     pub(crate) no_mouse: bool,
     pub(crate) no_keychain: bool,
     pub(crate) show_version: bool,
@@ -37,6 +52,7 @@ impl Default for Cli {
         Self {
             config_dir: None,
             port: DEFAULT_SERVER_PORT,
+            cache: false,
             no_mouse: false,
             no_keychain: false,
             show_version: false,
@@ -52,6 +68,7 @@ pub(crate) fn parse_cli() -> Result<Cli> {
         match arg.as_str() {
             "-h" | "--help" => cli.show_help = true,
             "-V" | "--version" | "version" => cli.show_version = true,
+            "--cache" => cli.cache = true,
             "--no-mouse" => cli.no_mouse = true,
             "--no-keychain" => cli.no_keychain = true,
             "-c" | "--config-dir" => {

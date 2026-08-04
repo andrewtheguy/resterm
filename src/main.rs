@@ -26,8 +26,8 @@ use crate::app::{App, BrowseFrame, Screen};
 use crate::cli::{USAGE, parse_cli};
 use crate::config::{ConfigLock, Paths};
 use crate::repo::{
-    ContentRow, diff_snapshots, get_file_details, list_tree, load_snapshots, open_indexed,
-    preview_snapshot_contents, snapshot_root_tree, verify_profile,
+    ContentRow, TreeCache, diff_snapshots, get_file_details, list_tree, load_snapshots,
+    open_indexed, preview_snapshot_contents, snapshot_root_tree, verify_profile,
 };
 use crate::ui::render;
 
@@ -48,6 +48,8 @@ fn main() -> Result<()> {
         println!("{USAGE}");
         return Ok(());
     }
+    // Set before the first restic call, which is `detect()` itself.
+    restic::set_cache_enabled(cli.cache);
     if let Err(error) = restic::detect() {
         eprintln!("{}", error.user_message());
         std::process::exit(1);
@@ -147,7 +149,8 @@ fn run(
             };
             let snap_id = app.browse_snapshot_id.clone();
             let refresh_path = app.pending_refresh_path.take();
-            match open_and_walk(profile, &snap_id, refresh_path.as_deref()) {
+            let trees = app.tree_cache.clone();
+            match open_and_walk(profile, &snap_id, refresh_path.as_deref(), trees) {
                 Ok((repo, stack)) => {
                     app.repo_session = Some(repo);
                     app.browse_stack = stack;
@@ -179,8 +182,16 @@ fn run(
             let limit = app.delete_preview_limit;
             let need_details = app.delete_info.is_none();
             let cached_preview = app.preview_cache.get(&(snap_id.clone(), limit)).cloned();
+            // Carried over when the details are already loaded — a repeat pass
+            // (paginating the preview) must still know where to start the walk.
+            let cached_paths = app
+                .delete_details_parsed
+                .as_ref()
+                .map(|parsed| parsed.paths.clone());
             let result = (|| -> anyhow::Result<_> {
-                let repo = open_indexed(profile)?;
+                // The preview walks with `ls`, never `cat tree`, so it has no
+                // use for the browse cache.
+                let repo = open_indexed(profile, TreeCache::default())?;
                 let restic_details = if need_details {
                     Some(restic::snapshot_details_json(profile, &snap_id)?)
                 } else {
@@ -195,7 +206,14 @@ fn run(
                 });
                 let preview = match cached_preview {
                     Some(preview) => preview,
-                    None => preview_snapshot_contents(&repo, &snap_id, limit)?,
+                    None => {
+                        let snapshot_paths = restic_details
+                            .as_ref()
+                            .map(|(parsed, _)| parsed.paths.clone())
+                            .or(cached_paths)
+                            .unwrap_or_default();
+                        preview_snapshot_contents(&repo, &snap_id, &snapshot_paths, limit)?
+                    }
                 };
                 Ok((info, restic_details, preview))
             })();
@@ -305,7 +323,8 @@ fn run(
                 continue;
             };
             let diff_result = (|| {
-                let repo = open_indexed(profile)?;
+                // `diff` reads no trees through the session either.
+                let repo = open_indexed(profile, TreeCache::default())?;
                 diff_snapshots(&repo, &first, &second)
             })();
             match diff_result {
@@ -401,11 +420,12 @@ fn open_and_walk(
     profile: &crate::config::Profile,
     snapshot_id: &str,
     refresh_path: Option<&[String]>,
+    trees: TreeCache,
 ) -> Result<(
     crate::repo::RepoSession,
     Vec<BrowseFrame>,
 )> {
-    let repo = open_indexed(profile)?;
+    let repo = open_indexed(profile, trees)?;
     let root_tree = snapshot_root_tree(&repo, snapshot_id)?;
     let root_items = list_tree(&repo, &root_tree)?;
     let (root_items, root_table_state) = with_parent(root_items);
