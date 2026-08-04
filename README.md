@@ -117,6 +117,23 @@ cargo run -- --config-dir ./tmp/resterm-sandbox
 
 The directory is created on first run if it doesn't exist.
 
+To back up your profiles, copy `config.toml` out of that directory — it is
+self-contained, so that file plus your passphrase is all a restore needs:
+
+```sh
+cp "${XDG_CONFIG_HOME:-$HOME/.config}/resterm/config.toml" ~/backups/   # Linux
+cp "$HOME/Library/Application Support/resterm/config.toml" ~/backups/   # macOS
+```
+
+```powershell
+Copy-Item "$env:APPDATA\resterm\config.toml" "$HOME\backups\"           # Windows
+```
+
+Nothing else in the directory needs copying. See
+[`docs/encryption.md`](docs/encryption.md) for restore caveats (keychain
+entries live in the OS credential store, not in the file) and for what a
+leaked backup would expose.
+
 Only one resterm can use a config directory at a time. Startup takes an
 exclusive lock on `<config-dir>/config.lock` and holds it until exit; a second
 instance on the same directory exits with an error rather than overwriting the
