@@ -55,23 +55,24 @@ find_restic() {
     elif command -v restic >/dev/null 2>&1; then
         command -v restic
     else
-        fail "restic >= 0.19.1 is required; set RESTIC_BIN or put restic on PATH"
+        fail "restic >= 0.19 is required; set RESTIC_BIN or put restic on PATH"
     fi
 }
 
-require_restic_0191() {
+require_restic_min() {
     local binary="$1"
-    local version major minor patch
+    local version major minor
 
     version="$("$binary" version | awk 'NR == 1 { print $2 }')"
+    # Still requires three components so a malformed version is rejected, even
+    # though the patch level no longer affects the comparison.
     [[ "$version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]] ||
         fail "could not parse restic version: ${version}"
     major="${BASH_REMATCH[1]}"
     minor="${BASH_REMATCH[2]}"
-    patch="${BASH_REMATCH[3]}"
 
-    if (( major == 0 && (minor < 19 || (minor == 19 && patch < 1)) )); then
-        fail "restic ${version} is too old; restic >= 0.19.1 is required"
+    if (( major == 0 && minor < 19 )); then
+        fail "restic ${version} is too old; restic >= 0.19 is required"
     fi
 }
 
@@ -94,7 +95,7 @@ seed_repository() {
     require_running_server
     local restic_binary source
     restic_binary="$(find_restic)"
-    require_restic_0191 "$restic_binary"
+    require_restic_min "$restic_binary"
     source="${runtime}/source"
     mkdir -p "${source}/nested"
 
@@ -113,7 +114,7 @@ run_test() {
     require_running_server
     local restic_binary test_bin_dir
     restic_binary="$(find_restic)"
-    require_restic_0191 "$restic_binary"
+    require_restic_min "$restic_binary"
     test_bin_dir="${runtime}/test-bin"
     mkdir -p "$test_bin_dir"
     ln -sf "$restic_binary" "${test_bin_dir}/restic"

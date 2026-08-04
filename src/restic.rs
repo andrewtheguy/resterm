@@ -9,9 +9,12 @@ use tokio::sync::mpsc;
 
 use crate::config::Profile;
 
+// The floor is the 0.19 series, i.e. 0.19.0 — the first release carrying the
+// JSON/JSONL output shapes and `dump` behavior resterm parses. Keep the prose
+// in README.md, docs/, install.ps1 and scripts/garage-e2e.sh in step with these.
 const MIN_MAJOR: u32 = 0;
 const MIN_MINOR: u32 = 19;
-const MIN_PATCH: u32 = 1;
+const MIN_PATCH: u32 = 0;
 
 pub(crate) struct ResticInfo;
 
@@ -39,10 +42,16 @@ impl ResticError {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct VersionDocument {
+    version: String,
+}
+
 pub(crate) fn detect() -> Result<ResticInfo, ResticError> {
     let output = match Command::new("restic")
         .arg("--no-cache")
         .arg("version")
+        .arg("--json")
         .output()
     {
         Ok(o) => o,
@@ -54,17 +63,22 @@ pub(crate) fn detect() -> Result<ResticInfo, ResticError> {
         });
     }
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    // Format: "restic 0.19.1 compiled with go1.25.1 on linux/amd64"
-    let version = stdout
-        .split_whitespace()
-        .nth(1)
+    // {"message_type":"version","version":"0.19.1","go_version":"go1.26.4",…}
+    // A restic old enough not to understand `--json` here lands in
+    // `Unparseable`, which is an acceptable message for something that far
+    // below the supported floor.
+    let parsed: VersionDocument = serde_json::from_str(stdout.trim())
+        .map_err(|_| ResticError::Unparseable { output: stdout.clone() })?;
+    let (major, minor, patch) = parse_version(&parsed.version)
         .ok_or_else(|| ResticError::Unparseable { output: stdout.clone() })?;
-    let (major, minor, patch) = parse_version(version)
-        .ok_or_else(|| ResticError::Unparseable { output: stdout.clone() })?;
-    if (major, minor, patch) < (MIN_MAJOR, MIN_MINOR, MIN_PATCH) {
-        return Err(ResticError::TooOld { found: version.to_string() });
+    if !meets_minimum((major, minor, patch)) {
+        return Err(ResticError::TooOld { found: parsed.version });
     }
     Ok(ResticInfo)
+}
+
+fn meets_minimum(found: (u32, u32, u32)) -> bool {
+    found >= (MIN_MAJOR, MIN_MINOR, MIN_PATCH)
 }
 
 fn parse_version(v: &str) -> Option<(u32, u32, u32)> {
@@ -152,7 +166,9 @@ pub(crate) fn ls_json(profile: &Profile, snapshot_id: &str) -> Result<Vec<u8>> {
 /// matches multiple).
 pub(crate) fn forget(profile: &Profile, snapshot_id: &str) -> Result<()> {
     ensure_full_snapshot_id(snapshot_id)?;
-    run(profile, &["forget", snapshot_id])?;
+    // `--json` for the same reason as `unlock`: any message restic emits is
+    // structured rather than prose. The exit status is what we act on.
+    run(profile, &["forget", snapshot_id, "--json"])?;
     Ok(())
 }
 
@@ -189,11 +205,19 @@ fn ensure_full_snapshot_id(id: &str) -> Result<()> {
     }
 }
 
-// Run `restic <args>` without its shared cache and with credentials passed by
-// the safest mechanism each supports. Never put secrets in argv. Master
-// password is piped through an anonymous pipe on the child's stdin; the repo
-// URL and any cloud creds go through env vars (override-only — parent env is
-// inherited so PATH, HOME, SSL_CERT_FILE, HTTP_PROXY, etc. still flow through).
+// Run `restic <args>` with credentials passed by the safest mechanism each
+// supports. Never put secrets in argv. Master password is piped through an
+// anonymous pipe on the child's stdin; the repo URL and any cloud creds go
+// through env vars (override-only — parent env is inherited so PATH, HOME,
+// SSL_CERT_FILE, HTTP_PROXY, etc. still flow through).
+//
+// Two restic global flags apply to every call built here:
+//   --no-cache  added below, so resterm never shares restic's on-disk cache
+//               with other CLI instances.
+//   --json      added by each caller alongside its subcommand, so restic's
+//               output and messages are structured rather than prose. It is
+//               per-caller rather than added here because `dump` must not get
+//               it — that command's stdout is the file's raw bytes.
 pub(crate) fn command(profile: &Profile, args: &[&str]) -> Result<Command> {
     let mut cmd = Command::new("restic");
     cmd.arg("--no-cache");
@@ -408,6 +432,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn minimum_is_the_0_19_series() {
+        // The whole 0.19 line is accepted, starting at .0 — this is the
+        // boundary the docs, install.ps1 and garage-e2e.sh all quote.
+        assert!(meets_minimum((0, 19, 0)));
+        assert!(meets_minimum((0, 19, 1)));
+        assert!(meets_minimum((0, 20, 0)));
+        assert!(meets_minimum((1, 0, 0)));
+        // Anything before it is refused.
+        assert!(!meets_minimum((0, 18, 9)));
+        assert!(!meets_minimum((0, 1, 0)));
+    }
+
+    #[test]
+    fn user_message_quotes_the_minimum() {
+        let msg = ResticError::TooOld { found: "0.18.1".into() }.user_message();
+        assert!(msg.contains("0.19.0"), "message should name the floor: {msg}");
+        assert!(msg.contains("0.18.1"), "message should name what was found: {msg}");
+    }
+
+    #[test]
     fn parses_version_string() {
         assert_eq!(parse_version("0.19.1"), Some((0, 19, 1)));
         assert_eq!(parse_version("1.2.3"), Some((1, 2, 3)));
@@ -570,7 +614,7 @@ mod tests {
         ));
         assert!(is_lock_error("repository is ALREADY LOCKED"));
         assert!(!is_lock_error(
-            "restic not found on PATH. Install restic >= 0.19.1 to use resterm."
+            "restic not found on PATH. Install restic >= 0.19.0 to use resterm."
         ));
         assert!(!is_lock_error("repository password is incorrect"));
     }

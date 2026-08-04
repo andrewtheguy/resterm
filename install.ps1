@@ -413,7 +413,7 @@ function Test-ResticPresent {
     $restic = Get-Command restic -ErrorAction SilentlyContinue
     if (-not $restic) {
         Print-Warn "restic was not found on your PATH."
-        Print-Warn "resterm requires restic >= 0.19.1 to run. Install it with:"
+        Print-Warn "resterm requires restic >= 0.19 to run. Install it with:"
         Print-Warn "  winget install restic.restic"
         Print-Warn "or grab a binary from https://github.com/restic/restic/releases"
         return
@@ -423,8 +423,8 @@ function Test-ResticPresent {
     Print-Info "Found restic: $versionLine"
     if ($versionLine -match 'restic\s+(\d+)\.(\d+)\.(\d+)') {
         $found = [version]::new([int]$matches[1], [int]$matches[2], [int]$matches[3])
-        if ($found -lt [version]::new(0, 19, 1)) {
-            Print-Warn "resterm requires restic >= 0.19.1; run 'restic self-update' to upgrade."
+        if ($found -lt [version]::new(0, 19, 0)) {
+            Print-Warn "resterm requires restic >= 0.19; run 'restic self-update' to upgrade."
         }
     }
 }
@@ -462,7 +462,7 @@ Supported platforms: Windows (amd64). The Windows build ships with the
 'keychain' feature enabled, so passphrases can be saved to Windows Credential
 Manager.
 
-Note: resterm also needs restic >= 0.19.1 on PATH ('winget install restic.restic').
+Note: resterm also needs restic >= 0.19 on PATH ('winget install restic.restic').
 Note: Installation as administrator is not recommended. Use -Admin to override.
 "@
 }

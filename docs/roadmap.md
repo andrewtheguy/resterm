@@ -13,7 +13,7 @@
 - Manage repository keys and password rotation without exposing secrets in
   environment variables or command arguments
 
-All write operations continue to run through restic >= 0.19.1. Repository
+All write operations continue to run through restic >= 0.19. Repository
 passwords must use the anonymous stdin pipe (`--password-file /dev/stdin` on
 Unix, restic's non-terminal stdin fallback on Windows); progress and results
 should use restic's structured output wherever available.
