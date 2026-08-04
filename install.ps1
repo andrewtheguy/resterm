@@ -454,7 +454,7 @@ Examples:
   .\install.ps1 -DownloadOnly                # Download latest to current directory
   .\install.ps1 -DownloadOnly <release-tag>  # Download specific stable release
   .\install.ps1 -Admin                       # Allow admin installation (not recommended)
-  `$env:RELEASE_TAG='v0.0.1'; .\install.ps1  # Use environment variable
+  `$env:RELEASE_TAG='<release-tag>'; .\install.ps1  # Use environment variable
 
 Installs to: `$env:LOCALAPPDATA\Programs\resterm (added to the user PATH)
 

@@ -47,10 +47,10 @@ curl -fsSL https://raw.githubusercontent.com/andrewtheguy/resterm/main/install.s
 
 Or clone the repo and run `./install.sh` directly. Useful flags:
 
-- `./install.sh v0.0.1` — install a specific release tag
+- `./install.sh <release-tag>` — install a specific release tag
 - `./install.sh --prerelease` — grab the latest prerelease
 - `./install.sh --download-only` — drop the binary in the current directory
-- `RELEASE_TAG=v0.0.1 ./install.sh` — same as passing the tag positionally
+- `RELEASE_TAG=<release-tag> ./install.sh` — same as passing the tag positionally
 
 The script verifies the SHA-256 of the downloaded binary against the digest
 GitHub publishes in the release metadata before installing, and runs the
@@ -72,10 +72,10 @@ irm https://raw.githubusercontent.com/andrewtheguy/resterm/main/install.ps1 | ie
 
 Or clone the repo and run `.\install.ps1` directly. Useful flags:
 
-- `.\install.ps1 v0.0.1` — install a specific release tag
+- `.\install.ps1 <release-tag>` — install a specific release tag
 - `.\install.ps1 -PreRelease` — grab the latest prerelease
 - `.\install.ps1 -DownloadOnly` — drop the binary in the current directory
-- `$env:RELEASE_TAG='v0.0.1'; .\install.ps1` — same as passing the tag
+- `$env:RELEASE_TAG='<release-tag>'; .\install.ps1` — same as passing the tag
 
 A piped `iex` one-liner cannot take arguments, so set
 `$env:RESTERM_INSTALL_ARGS` instead:

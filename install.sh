@@ -416,7 +416,7 @@ show_usage() {
     echo ""
     echo "Examples:"
     echo "  $0                              # Install latest release"
-    echo "  $0 v0.0.1                       # Install specific release"
+    echo "  $0 <release-tag>                # Install specific release"
     echo "  $0 --prerelease                 # Install latest prerelease"
     echo "  $0 --download-only              # Download latest to current directory"
     echo ""
