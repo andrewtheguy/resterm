@@ -589,29 +589,87 @@ mod tests {
         Ok(())
     }
 
+    /// Config dir the spawned child should try to lock.
+    const CHILD_DIR_ENV: &str = "RESTERM_TEST_LOCK_DIR";
+    const CHILD_ACQUIRED: &str = "CHILD-ACQUIRED";
+    const CHILD_REFUSED: &str = "CHILD-REFUSED: ";
+
+    /// Re-run this test binary as a child process, executing only
+    /// [`lock_contention_child`] against `dir`, and return its stdout.
+    ///
+    /// A second process is what the lock actually guards against, and it is the
+    /// only way to observe that: `try_lock` from a second handle in the *same*
+    /// process happens to conflict under std's current `flock`/`LockFileEx`
+    /// implementation, but that is an implementation detail the docs reserve
+    /// the right to change.
+    fn run_lock_child(dir: &std::path::Path) -> String {
+        let exe = std::env::current_exe().expect("path to the test binary");
+        let output = std::process::Command::new(exe)
+            .args([
+                "--exact",
+                "--ignored",
+                // The child reports its verdict on stdout, so it must not be
+                // swallowed by libtest's capture.
+                "--nocapture",
+                "config::tests::lock_contention_child",
+            ])
+            .env(CHILD_DIR_ENV, dir)
+            .output()
+            .expect("spawn child test process");
+        assert!(
+            output.status.success(),
+            "child test process failed ({}):\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    /// Not a test on its own — the child half of
+    /// [`lock_is_exclusive_across_processes`]. Always passes; the verdict is on
+    /// stdout so the parent can assert on it.
     #[test]
-    fn lock_is_exclusive_and_released_on_drop() -> Result<()> {
+    #[ignore = "spawned as a child process by lock_is_exclusive_across_processes"]
+    fn lock_contention_child() {
+        let dir = std::env::var(CHILD_DIR_ENV)
+            .unwrap_or_else(|_| panic!("child requires {CHILD_DIR_ENV}"));
+        let paths = test_paths(std::path::Path::new(&dir));
+        match acquire_lock(&paths) {
+            // Hold the guard only until this scope ends; the parent waits for
+            // the process to exit before checking anything further.
+            Ok(_lock) => println!("{CHILD_ACQUIRED}"),
+            Err(e) => println!("{CHILD_REFUSED}{e:#}"),
+        }
+    }
+
+    #[test]
+    fn lock_is_exclusive_across_processes() -> Result<()> {
         let dir = fresh_dir("lock");
         // `acquire_lock` creates the directory itself — remove it first so the
         // test covers a genuinely fresh config dir.
         fs::remove_dir_all(&dir).ok();
+        // The child inherits this process's cwd, but an absolute path keeps the
+        // two halves agreeing regardless.
+        let dir = std::path::absolute(&dir)?;
         let paths = test_paths(&dir);
 
         let first = acquire_lock(&paths)?;
         assert!(paths.lock.exists(), "lock file should be created");
 
-        let err = acquire_lock(&paths).expect_err("second lock must be refused");
-        let msg = format!("{err:#}");
+        let refused = run_lock_child(&dir);
         assert!(
-            msg.contains("another resterm instance"),
-            "error should name the conflict: {msg}"
+            refused.contains(CHILD_REFUSED) && refused.contains("another resterm instance"),
+            "a second process must be refused while the lock is held, got:\n{refused}"
         );
 
         drop(first);
-        // Same process, but a fresh handle: flock/LockFileEx are per-handle, so
-        // this proves the first guard actually released.
-        let again = acquire_lock(&paths)?;
-        drop(again);
+        // A fresh process now succeeds, which is what proves the guard released
+        // rather than merely that this process can re-enter its own lock.
+        let acquired = run_lock_child(&dir);
+        assert!(
+            acquired.contains(CHILD_ACQUIRED),
+            "the lock should be free once the holder drops it, got:\n{acquired}"
+        );
 
         fs::remove_dir_all(&dir).ok();
         Ok(())
