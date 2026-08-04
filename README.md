@@ -204,11 +204,17 @@ file's raw bytes.
 Caching is off by default: a restic cache reaches hundreds of megabytes on a
 large repository, and that is not always a trade worth making. Pass `--cache` to
 let restic keep one, in a directory private to resterm and to your user account
-— `~/.cache/resterm` (Linux, or `$XDG_CACHE_HOME/resterm`),
-`~/Library/Caches/resterm` (macOS), `%LOCALAPPDATA%\resterm` (Windows). Each of
-those roots already lives inside the calling user's home or profile, so two
-users on the same machine cannot collide and neither can inherit a directory
-the other created. Reclaim the space with `restic cache --cleanup`.
+— `$XDG_CACHE_HOME/resterm` if that variable is set and `~/.cache/resterm`
+otherwise (Linux), `~/Library/Caches/resterm` (macOS), `%LOCALAPPDATA%\resterm`
+(Windows). Each of those roots already lives inside the calling user's home or
+profile, so two users on the same machine cannot collide and neither can inherit
+a directory the other created.
+
+To prune it, point restic at the same directory — `restic --cache-dir <that
+path> cache --cleanup`. Plain `restic cache --cleanup` would work on restic's
+own default cache, not resterm's. Note that `--cleanup` only removes caches
+untouched for `--max-age` days (30 by default), so the cache for a repository
+you still browse is left alone; delete the directory to reclaim it outright.
 
 Caching pays off against a remote repository, where it saves refetching the
 index and pack headers. On a small local repository it buys nothing measurable —

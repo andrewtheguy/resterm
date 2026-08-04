@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -417,11 +417,22 @@ pub(crate) fn preview_snapshot_contents(
     snapshot_paths: &[String],
     limit: usize,
 ) -> Result<ContentsPreview> {
-    let mut fetch = |dirs: &[String]| {
+    preview_from_paths(snapshot_paths, limit, |dirs| {
         let output = restic::ls_children_json(&repo.profile, snapshot_id, dirs)?;
         let text = String::from_utf8(output).context("restic ls output was not UTF-8")?;
         parse_ls_children(&text, dirs)
-    };
+    })
+}
+
+/// Seed the walk at the snapshot's own paths and fall back to the tree root if
+/// they turn out to list nothing. Separated from restic so the fallback — a
+/// correctness path, not an optimisation — can be tested against a synthetic
+/// tree.
+fn preview_from_paths(
+    snapshot_paths: &[String],
+    limit: usize,
+    mut fetch: impl FnMut(&[String]) -> Result<Vec<(String, Vec<LsNode>)>>,
+) -> Result<ContentsPreview> {
     let roots = preview_roots(snapshot_paths);
     let preview = build_preview(&roots, limit, &mut fetch)?;
     // A snapshot taken from a *relative* path records absolutised `paths` that
@@ -446,11 +457,17 @@ pub(crate) fn preview_snapshot_contents(
 /// Only absolute paths are usable as `restic ls` filters; anything else (a
 /// Windows `C:\…` path, say) falls back to the tree root.
 fn preview_roots(snapshot_paths: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
     let roots: Vec<String> = snapshot_paths
         .iter()
         .filter(|path| path.starts_with('/'))
         .map(|path| path.trim_end_matches('/').to_string())
         .filter(|path| !path.is_empty())
+        // `backup /etc /etc/` records two paths naming one directory.
+        // `parse_ls_children` groups by path, so the repeat would come back
+        // empty and spend a filter on restic for nothing. Deduplicating before
+        // the cap also means it counts distinct directories.
+        .filter(|path| seen.insert(path.clone()))
         .take(PREVIEW_MAX_DIRS_PER_LEVEL)
         .collect();
     if roots.is_empty() {
@@ -540,8 +557,12 @@ fn parse_ls_children(text: &str, dirs: &[String]) -> Result<Vec<(String, Vec<LsN
             continue;
         }
         let node: LsNode = serde_json::from_value(value).context("parsing restic ls node")?;
-        let parent = parent_path(&node.path)
-            .ok_or_else(|| anyhow!("restic ls node path `{}` has no parent", node.path))?;
+        // A path with no parent cannot be a child of any filter directory —
+        // those are all absolute — so skip it rather than failing the whole
+        // preview over one unexpected line.
+        let Some(parent) = parent_path(&node.path) else {
+            continue;
+        };
         if let Some(dir) = dirs.iter().find(|dir| *dir == &parent) {
             children.entry(dir.as_str()).or_default().push(node);
         }
@@ -762,6 +783,26 @@ mod tests {
     }
 
     #[test]
+    fn ls_children_skips_a_node_with_no_parent_path() {
+        let text = r#"
+{"message_type":"node","name":"odd","type":"file","path":"odd"}
+{"message_type":"node","name":"a.txt","type":"file","path":"/a/a.txt"}
+"#;
+        let dirs = vec!["/a".to_string()];
+        let levels = parse_ls_children(text, &dirs).expect("parse");
+        // The parentless path belongs to no filter directory either way, so it
+        // is dropped rather than failing the whole preview.
+        let paths: Vec<&str> = levels[0].1.iter().map(|n| n.path.as_str()).collect();
+        assert_eq!(paths, ["/a/a.txt"]);
+    }
+
+    #[test]
+    fn preview_roots_drop_repeated_paths() {
+        let paths = vec!["/etc".to_string(), "/etc/".to_string(), "/home".to_string()];
+        assert_eq!(preview_roots(&paths), ["/etc", "/home"]);
+    }
+
+    #[test]
     fn preview_roots_fall_back_to_the_tree_root() {
         // Windows snapshots record `C:\…`, which is not a usable `ls` filter.
         let paths = vec![r"C:\Users\andrew\projects".to_string()];
@@ -933,6 +974,56 @@ mod tests {
         .expect("preview");
         assert_eq!(preview.entries.len(), 1);
         assert!(!preview.truncated);
+    }
+
+    // A tree holding `/src/a.txt` and nothing at the seeded path, which is what
+    // a snapshot taken from a relative path looks like: restic absolutises
+    // `paths` to `/home/andrew/deep/src` but stores the tree as `/src`.
+    fn relative_backup_fetch(dirs: &[String]) -> Result<Vec<(String, Vec<LsNode>)>> {
+        Ok(dirs
+            .iter()
+            .map(|dir| {
+                let node = |path: &str, kind: &str| LsNode {
+                    kind: kind.to_string(),
+                    path: path.to_string(),
+                    size: 0,
+                };
+                let nodes = match dir.as_str() {
+                    "/" => vec![node("/src", "dir")],
+                    "/src" => vec![node("/src/a.txt", "file")],
+                    _ => Vec::new(),
+                };
+                (dir.clone(), nodes)
+            })
+            .collect())
+    }
+
+    #[test]
+    fn preview_falls_back_to_the_tree_root_when_the_seeded_paths_list_nothing() {
+        let mut asked = Vec::new();
+        let preview = preview_from_paths(&["/home/andrew/deep/src".to_string()], 50, |dirs| {
+            asked.push(dirs.to_vec());
+            relative_backup_fetch(dirs)
+        })
+        .expect("preview");
+        let paths: Vec<&str> = preview.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["/src", "/src/a.txt"]);
+        assert_eq!(asked[0], ["/home/andrew/deep/src"], "seeded path tried first");
+        assert_eq!(asked[1], ["/"], "then the walk restarts at the tree root");
+    }
+
+    #[test]
+    fn preview_keeps_the_seeded_roots_when_they_list_something() {
+        let mut asked = Vec::new();
+        let preview = preview_from_paths(&["/src".to_string()], 50, |dirs| {
+            asked.push(dirs.to_vec());
+            relative_backup_fetch(dirs)
+        })
+        .expect("preview");
+        let paths: Vec<&str> = preview.entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["/src/a.txt"]);
+        // No restart from `/`: the seed worked, so the extra call is not spent.
+        assert!(!asked.iter().any(|dirs| dirs == &[PREVIEW_ROOT.to_string()]));
     }
 
     // ──── Tree cache ────────────────────────────────────────────────────
