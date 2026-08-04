@@ -1,5 +1,7 @@
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
 use anyhow::{Result, anyhow};
@@ -15,6 +17,56 @@ use crate::config::Profile;
 const MIN_MAJOR: u32 = 0;
 const MIN_MINOR: u32 = 19;
 const MIN_PATCH: u32 = 0;
+
+/// resterm's own restic cache directory, or `None` when no per-user cache root
+/// can be determined.
+///
+/// `dirs::cache_dir()` is the per-user, per-platform cache root: `$XDG_CACHE_HOME`
+/// or `~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on
+/// Windows. Every one of those already sits inside the calling user's own home
+/// or profile, so two users running resterm cannot collide and neither can
+/// inherit a directory the other created — without a uid in the path, and
+/// without a `#[cfg(unix)]` branch for a concept Windows does not have.
+///
+/// A shared location such as `/tmp` would need that uid, and would still be
+/// the wrong home for this: it is world-writable, so another local user can
+/// win the race to create the path first and own it; it is `tmpfs` on many
+/// distributions, which is no place for the hundreds of megabytes a restic
+/// cache reaches; and it is cleared on reboot and by age, so the cache it
+/// holds keeps being rebuilt — which is most of the point of having one.
+///
+/// The `resterm` component keeps this apart from restic's default cache, so
+/// resterm still never shares cache state with another restic CLI instance.
+fn cache_dir() -> Option<PathBuf> {
+    Some(dirs::cache_dir()?.join("resterm"))
+}
+
+/// Whether `--cache` was passed. Off by default: a restic cache costs real disk
+/// space — hundreds of megabytes for a large repository — which is not always a
+/// trade worth making, so resterm only keeps one when asked.
+static CACHE_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// Set once from the command line, before any restic call is made.
+pub(crate) fn set_cache_enabled(enabled: bool) {
+    CACHE_ENABLED.store(enabled, Ordering::Relaxed);
+}
+
+/// Add the cache flag every restic invocation carries.
+///
+/// Default is `--no-cache`. With `--cache`, restic is pointed at [`cache_dir`]
+/// instead — and if no per-user cache root can be named, caching stays off
+/// rather than falling back to restic's own default, which resterm must not
+/// share with other restic CLI instances.
+fn apply_cache_flag(cmd: &mut Command) {
+    match cache_dir().filter(|_| CACHE_ENABLED.load(Ordering::Relaxed)) {
+        Some(dir) => {
+            cmd.arg("--cache-dir").arg(dir);
+        }
+        None => {
+            cmd.arg("--no-cache");
+        }
+    }
+}
 
 pub(crate) struct ResticInfo;
 
@@ -48,12 +100,9 @@ struct VersionDocument {
 }
 
 pub(crate) fn detect() -> Result<ResticInfo, ResticError> {
-    let output = match Command::new("restic")
-        .arg("--no-cache")
-        .arg("version")
-        .arg("--json")
-        .output()
-    {
+    let mut cmd = Command::new("restic");
+    apply_cache_flag(&mut cmd);
+    let output = match cmd.arg("version").arg("--json").output() {
         Ok(o) => o,
         Err(_) => return Err(ResticError::NotFound),
     };
@@ -162,7 +211,7 @@ pub(crate) fn snapshot_details_json(
 /// how many directories are passed and — the point of listing this way —
 /// regardless of how large the snapshot is. Listing a snapshot recursively
 /// instead makes restic fetch *every* tree in it, which on a remote backend
-/// with `--no-cache` is a network round trip per directory.
+/// without a cache — the default — is a network round trip per directory.
 ///
 /// Note that restic also echoes each filter directory's own node, not just its
 /// children; callers must key off the parent path rather than assume every
@@ -239,15 +288,17 @@ fn ensure_full_snapshot_id(id: &str) -> Result<()> {
 // SSL_CERT_FILE, HTTP_PROXY, etc. still flow through).
 //
 // Two restic global flags apply to every call built here:
-//   --no-cache  added below, so resterm never shares restic's on-disk cache
-//               with other CLI instances.
+//   the cache flag  added below by `apply_cache_flag`: `--no-cache` by default,
+//               or `--cache-dir <per-user path>` under `--cache`. Either way
+//               resterm never shares restic's on-disk cache with other CLI
+//               instances, because it never lets restic use the default one.
 //   --json      added by each caller alongside its subcommand, so restic's
 //               output and messages are structured rather than prose. It is
 //               per-caller rather than added here because `dump` must not get
 //               it — that command's stdout is the file's raw bytes.
 pub(crate) fn command(profile: &Profile, args: &[&str]) -> Result<Command> {
     let mut cmd = Command::new("restic");
-    cmd.arg("--no-cache");
+    apply_cache_flag(&mut cmd);
     // Windows has no `/dev/stdin` path for restic to open. It doesn't need
     // one: when stdin is not a terminal — which it never is here, since
     // `command` always pipes it — restic reads the repository password
@@ -496,14 +547,27 @@ mod tests {
         assert_eq!(repo_url(&p).unwrap(), "/var/restic/a");
     }
 
-    #[test]
-    fn command_disables_restic_cache() {
-        let profile = Profile::Local {
+    fn test_profile() -> Profile {
+        Profile::Local {
             password: "pw".into(),
             local_path: "/var/restic/a".into(),
-        };
-        let command = command(&profile, &["snapshots", "--json"]).unwrap();
-        let args: Vec<_> = command.get_args().collect();
+        }
+    }
+
+    fn command_args(profile: &Profile) -> Vec<String> {
+        command(profile, &["snapshots", "--json"])
+            .unwrap()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    // Both halves live in one test because the cache switch is process-wide,
+    // and Rust runs tests in the same process on parallel threads — as two
+    // tests they would race over it.
+    #[test]
+    fn cache_is_off_by_default_and_opts_in_to_a_private_per_user_directory() {
+        let args = command_args(&test_profile());
         #[cfg(unix)]
         let expected: &[&str] = &[
             "--no-cache",
@@ -518,9 +582,39 @@ mod tests {
         let expected: &[&str] = &["--no-cache", "snapshots", "--json"];
         assert_eq!(args, expected);
         assert!(
-            !args.iter().any(|a| a.to_string_lossy().contains("pw")),
+            !args.iter().any(|arg| arg.contains("pw")),
             "the password must never reach argv: {args:?}"
         );
+
+        // No per-user cache root on this machine means there is nothing to opt
+        // into, and `--no-cache` above is the whole story.
+        let Some(dir) = cache_dir() else { return };
+        set_cache_enabled(true);
+        let opted_in = command_args(&test_profile());
+        set_cache_enabled(false);
+
+        assert!(
+            !opted_in.iter().any(|arg| arg == "--no-cache"),
+            "opting in must not also disable the cache: {opted_in:?}"
+        );
+        let passed = opted_in
+            .iter()
+            .position(|arg| arg == "--cache-dir")
+            .and_then(|i| opted_in.get(i + 1))
+            .expect("--cache-dir and its path");
+        assert_eq!(passed.as_str(), dir.to_string_lossy());
+        // The per-user cache root sits inside the calling user's own home or
+        // profile, which is what keeps two users from colliding, and the
+        // `resterm` leaf keeps this out of restic's own default cache.
+        assert!(
+            dir.starts_with(dirs::cache_dir().expect("cache root")),
+            "{dir:?} must sit under the per-user cache root"
+        );
+        assert!(dir.ends_with("resterm"), "{dir:?}");
+
+        // Restored, so the default-path assertions above still hold for any
+        // test that runs after this one.
+        assert_eq!(command_args(&test_profile()), args);
     }
 
     #[test]

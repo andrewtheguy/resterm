@@ -143,10 +143,16 @@ synchronously on `Screen::PassphraseDerivingKey`.
 `restic.rs` owns subprocess construction and credential transport:
 - `detect()` requires restic >= 0.19, and reads the version from
   `restic version --json` rather than parsing the prose line.
-- Two restic global flags apply throughout. `--no-cache` goes on every
-  invocation, added centrally in `command()` (and in `detect()`), so resterm
-  never shares restic's on-disk cache with other CLI instances. `--json` goes
-  on every invocation that supports it, added by each caller next to its
+- Two restic global flags apply throughout. A cache flag goes on every
+  invocation, added centrally by `apply_cache_flag()` from `command()` (and from
+  `detect()`): `--no-cache` by default, or `--cache-dir` pointed at
+  `dirs::cache_dir()/resterm` when the `--cache` CLI flag set the
+  `CACHE_ENABLED` static at startup. Either spelling keeps resterm from sharing
+  restic's on-disk cache with other CLI instances; the per-user cache root is
+  what keeps two users' caches apart, without a uid in the path and without a
+  `#[cfg(unix)]` branch for a concept Windows lacks. If no cache root can be
+  named, caching stays off rather than falling back to restic's default. `--json`
+  goes on every invocation that supports it, added by each caller next to its
   subcommand; `dump` is the sole exception, since its stdout is the file's raw
   bytes.
 - `command()` also removes inherited restic password variables and configures
@@ -184,7 +190,7 @@ synchronously on `Screen::PassphraseDerivingKey`.
   is the case for Windows `C:\…` paths and for backups taken from a relative
   path. Listing a snapshot recursively instead would make restic fetch every
   tree in it, which is a network round trip per directory on a remote backend
-  running with `--no-cache`.
+  when no cache is kept — the default.
 
 The share server invokes `restic dump <snapshot> <path>` for each accepted
 download and forwards stdout through a bounded channel to Hyper.

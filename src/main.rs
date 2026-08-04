@@ -48,6 +48,8 @@ fn main() -> Result<()> {
         println!("{USAGE}");
         return Ok(());
     }
+    // Set before the first restic call, which is `detect()` itself.
+    restic::set_cache_enabled(cli.cache);
     if let Err(error) = restic::detect() {
         eprintln!("{}", error.user_message());
         std::process::exit(1);
